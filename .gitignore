@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+*.egg-info/
+.eggs/
+
+# Environments and packaging
+.venv/
+venv/
+env/
+build/
+dist/
+wheelhouse/
+
+# Test and tooling caches
+.pytest_cache/
+.ruff_cache/
+pytest-of-*/
+
+# Local-only repository areas
+_local/
+_tmp/
+_cache/
