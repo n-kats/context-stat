@@ -111,7 +111,7 @@ source: file
 +-----------+------+--------+
 ```
 
-ディレクトリでは、ディレクトリ自身の合計と配下のファイルを`tree`で確認できます。`TOTAL`という別行は作りません。
+ディレクトリを指定すると、ディレクトリの行に配下の対象の集計値を表示し、その下にファイルと子ディレクトリを表示します。
 
 ```text
 source: file
@@ -158,13 +158,14 @@ source: jinja
 +-----------+--------+
 | item      | tokens |
 +-----------+--------+
+| rendered  |  <合計> |
 | prompt.j2 |  <値>  |
 +-----------+--------+
 ```
 
 ### Gitのファイル別差分: `git diff`
 
-`git diff`と同じ比較対象・オプションを解釈し、変更ファイルごとのpatchを計測します。`--`以降はpathspecです。`--no-patch`、`--name-only`、`--stat`などpatchを生成しない指定は使えません。
+`git diff`の比較対象、pathspec、context-statが対応しているGit diffオプションを解釈し、変更ファイルごとのpatchを計測します。対応していないGitオプションはエラーにします。`--`以降はpathspecです。`--no-patch`、`--name-only`、`--stat`などpatchを生成しない指定は使えません。
 
 ```console
 context-stat git diff HEAD -- src/
@@ -199,12 +200,15 @@ context-stat mcp list --url https://example.test/mcp
 ```text
 source: mcp-list
 [tools]
-+--------+--------------------------+--------+
-| item   | description              | tokens |
-+--------+--------------------------+--------+
-| echo   | Return the supplied ...   |  <値>  |
-+--------+--------------------------+--------+
++----------+--------------------------+--------+
+| item     | description              | tokens |
++----------+--------------------------+--------+
+| tools    |                          | <合計> |
+| echo     | Return the supplied ...  |  <値>  |
++----------+--------------------------+--------+
 [resources]
+(no selected metrics)
+[prompts]
 (no selected metrics)
 ```
 
@@ -285,7 +289,7 @@ _context_stat_completion() {
 - ディレクトリは再帰的に走査し、既定では`.gitignore`を反映します。`--ignore-gitignore`で無視できます。
 - 直接指定したファイルは`.gitignore`に関係なく対象です。非画像バイナリはスキップします。
 - 画像は直接指定なら対象です。ディレクトリでは`--include-images`を指定します。
-- ディレクトリの合計はディレクトリ行に表示し、`TOTAL`行は出しません。
+- ディレクトリnodeは配下の対象を集計した値を持ち、ファイルnodeや子ディレクトリnodeと同じ一覧に表示します。
 - `git diff`は変更ファイルごとのpatchを計測します。`--no-patch`などpatchを生成しない指定は拒否します。
 - 警告とエラーの診断は標準エラーへまとめ、標準出力には計測結果を出します。
 - `mcp request`は通常、計測表と結果状態だけを表示します。`-v`/`--verbose`を指定した場合だけ、表の外側にMCPから返った結果本文を表示します。画像のBase64は表示せず、MIME typeと幅・高さへ置き換えます。

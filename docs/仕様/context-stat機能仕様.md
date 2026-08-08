@@ -118,7 +118,7 @@ extrasを指定しない標準インストールでも、tiktokenによるテキ
 
 #### 画像計測方式
 
-現行版で実装している画像計測方式は`gpt-5.6-style`だけである。追加方式を実装する場合は、テキスト用トークナイザーとは別の方式として、次の情報を定義する。方式は、特定モデルの公式な計算式を意味する場合と、互換性を意図した方式を意味する場合がある。
+現行版で実装している画像計測方式は`gpt-5.6-style`と`anthropic-api`である。追加方式を実装する場合は、テキスト用トークナイザーとは別の方式として、次の情報を定義する。方式は、特定モデルの公式な計算式を意味する場合と、互換性を意図した方式を意味する場合がある。
 
 - 方式名と対象とする入力仕様
 - 受け付ける画像形式とアニメーションの扱い
@@ -165,7 +165,7 @@ Gitの差分を標準入力として受け取るのではなく、ローカル�
 
 例えば、次の指定を受け付ける。
 
-```text
+```console
 context-stat --backend tiktoken --text-tokenizer o200k_base git diff branch branch -- file
 ```
 
@@ -195,7 +195,7 @@ stdioはcontext-stat自身のネットワーク接続としては扱わないが
 
 MCP操作の接続元は、JSON設定を指定する`--config FILE`、Codexの`config.toml`を指定する`--codex-config FILE`、またはStreamable HTTPの`--url URL`のいずれか一つを指定する。`--url`を指定した場合は`transport=streamable-http`として扱う。HTTPヘッダーは`--header-from-env HEADER=ENV`を繰り返して指定でき、値は環境変数から読み込む。URLとヘッダー値は計測レポートへ出力しない。`--config`、`--codex-config`、`--url`は同時に指定できない。
 
-`--codex-config FILE`はCodex設定の`[mcp_servers.<名前>]`を読み取る。有効な接続設定が1つなら自動選択し、複数ある場合は`--server NAME`で選択する。`enabled = false`のサーバーは選択対象にしない。stdioでは`command`、`args`、`cwd`、`env`を、Streamable HTTPでは`url`、`headers`、`env_http_headers`、`bearer_token_env_var`を読み取る。CodexのOAuth保存情報、ChatGPTセッション認証、ツール許可設定は再利用しない。
+`--codex-config FILE`はCodex設定の`[mcp_servers.<名前>]`を読み取る。有効な接続設定が1つなら自動選択し、複数ある場合は`--server NAME`で選択する。`enabled = false`のサーバーは選択対象にしない。stdioでは`command`、`args`、`cwd`、`env`を、Streamable HTTPでは`url`、`http_headers`、`env_http_headers`、`bearer_token_env_var`を読み取る。CodexのOAuth保存情報、ChatGPTセッション認証、ツール許可設定は再利用しない。
 
 #### 一覧取得
 
@@ -241,7 +241,7 @@ MCPでは、リクエストとレスポンスを区別して表示する。
 
 出力形式は`--format`で選択する。既定値は表形式の`table`、機械処理向けは`json`、sourceを根、グループと対象を親子関係で表示する木構造は`tree`とする。treeは標準的なtree表示の罫線（`├──`、`└──`、`│`）で表示し、対象は`path [XX tokens]`のように1行で表示する。skipやfailedの注記を対象ごとの行へ付けず、計測完了後の標準エラーへ集約する。同じ階層の兄弟は`--sort`と`--order`で指定した順序に従う。`--sort`の既定値は`path`、`--order`の既定値は`asc`とする。後方互換のため`--output-format`も同じ値を受け付ける。JSONは`schema_version`を持つ版管理された形式とし、現行版の構造を次で定義する。
 
-ファイルまたはディレクトリを表形式で出力する場合、ディレクトリ自身を集計行として表示する。入力が`.`なら集計行のパスも`.`とし、配下のディレクトリにも同じ規則を適用する。`TOTAL`という合成行は出力しない。tableとJSONのpath groupは、ディレクトリ合計を含む全ノードをフラットな行一覧として出力する。JSONでは、個別ファイルの互換用`items`に加えて、この行一覧を`nodes`として出力する。`nodes`の`kind`は`dir`または`file`、ディレクトリの`metrics`は配下のファイルから集計した値とする。`totals`という合成フィールドは出力しない。
+ファイルまたはディレクトリを表形式で出力する場合、ディレクトリnodeは配下の対象を集計した値を持つ。入力が`.`ならnodeのパスも`.`とし、配下のディレクトリにも同じ規則を適用する。tableとJSONのpath groupは、ファイルnodeとディレクトリnodeを同じフラットな行一覧として出力する。JSONでは、個別ファイルの互換用`items`に加えて、この行一覧を`nodes`として出力する。`nodes`の`kind`は`dir`または`file`、ディレクトリの`metrics`は配下の対象から集計した値とする。
 tableの計測値セルは値だけを表示し、単位は列見出しで示す。メトリクス列は右寄せ、パス・項目名・種類の列は左寄せとする。`skip`、`failed`、`external`などの注記を対象ごとに繰り返さない。状態と外部送信の有無はJSONのmetric情報に保持し、skipやfailedの警告・エラーは標準エラーへ集約する。
 
 警告とエラーは通常のレポート出力へ混ぜず、レポートを標準出力へ出し切った後に標準エラーへまとめて出力する。これによりJSONの標準出力を機械処理へそのまま渡せるようにする。
@@ -252,7 +252,7 @@ tableの計測値セルは値だけを表示し、単位は列見出しで示す
 
 `items`の要素は`id`、`origin`、`label`、`kind`、`direction`、`semantic_role`、`limit_status`、`metrics`、`metadata`を持つ。`metrics`の各値は`value`、`unit`、`status`、`external`を必須とし、値がある場合だけ`method`、`reason`、`details`を持つ。`status`は`measured`、`skip`、`failed`のいずれかである。`direction`、`semantic_role`、`limit_status`は対象に該当しない場合は`null`になる。
 
-path groupの`nodes`は、ディレクトリ合計を含む表示順のフラットな一覧であり、各要素は`path`、`kind`、`metrics`を持つ。ファイルnodeには対応する`item`も付加する。ディレクトリの`metrics`は配下の計測済みファイルから集計し、加算項目は合計、`max_line_length`は最大値とする。`TOTAL`行や`totals`フィールドは設けない。path group以外のtableでは、グループ名を集計行として先頭に表示し、`summary`と同じ集計値を示す。警告とエラーはJSONにも配列として保持するが、CLIの標準出力では空配列にし、同じ内容を標準エラーへ出力する。
+path groupの`nodes`は、ファイルnodeとディレクトリnodeを含む表示順のフラットな一覧であり、各要素は`path`、`kind`、`metrics`を持つ。ファイルnodeには対応する`item`も付加する。ディレクトリの`metrics`は配下の計測済みファイルから集計し、加算項目は合計、`max_line_length`は最大値とする。path group以外のtableでは、グループ名を集計行として先頭に表示し、`summary`と同じ集計値を示す。警告とエラーはJSONにも配列として保持するが、CLIの標準出力では空配列にし、同じ内容を標準エラーへ出力する。
 
 ## コマンド構成
 

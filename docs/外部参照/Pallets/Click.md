@@ -1,6 +1,6 @@
 # Click
 
-Click採用を決めた時点の参照ログである。現行の依存範囲は`pyproject.toml`と`uv.lock`を正とする。
+Click採用を決めた時点の参照ログである。現行の依存範囲は`pyproject.toml`と`uv.lock`を参照する。
 
 ## 参照先
 

@@ -56,7 +56,7 @@ context-stat --sort tokens --order desc stat src/
 context-stat -p 4 stat src/
 ```
 
-`--sort`を省略した場合はパス順です。`table`、`tree`、`json`は同じ順序を使います。ディレクトリの合計はディレクトリ自身の行に表示し、`TOTAL`行は出しません。
+`--sort`を省略した場合はパス順です。`table`、`tree`、`json`は同じ順序を使います。ディレクトリの行には、配下の対象を集計した値が表示されます。
 
 ## ファイルごとのコマンド結果
 
@@ -79,7 +79,7 @@ context-stat jinja prompt.j2 --params '{"name":"Ada"}'
 
 ## Git差分
 
-Gitの引数は`git diff`と同じ形で指定し、`--`以降をpathspecにします。共通オプションはGitコマンドより前に置きます。
+Gitの比較対象、pathspec、context-statが対応しているGit diffオプションを指定できます。context-statが解釈できないGitオプションはそのまま渡さずエラーにします。`--`以降はpathspecです。共通オプションはGitコマンドより前に置きます。
 
 ```console
 context-stat --format json git diff HEAD -- src/
@@ -115,7 +115,7 @@ context-stat -v mcp request --url https://example.test/mcp --header-from-env Aut
 
 MCP接続は`--config FILE`、Codex設定の`--codex-config FILE`、`--url URL`のいずれかを指定します。`--url`はStreamable HTTPとして扱われます。Codex設定は`[mcp_servers.<名前>]`を読み取り、有効なサーバーが1つなら自動選択します。複数ある場合は`--server NAME`を指定します。`--config`、`--codex-config`、`--url`は同時に指定できません。
 
-Codex設定からは、stdioの`command`、`args`、`cwd`、`env`と、Streamable HTTPの`url`、`headers`、`env_http_headers`、`bearer_token_env_var`を読み取ります。CodexのOAuth保存情報やChatGPTセッション認証はcontext-statから利用しません。
+Codex設定からは、stdioの`command`、`args`、`cwd`、`env`と、Streamable HTTPの`url`、`http_headers`、`env_http_headers`、`bearer_token_env_var`を読み取ります。CodexのOAuth保存情報やChatGPTセッション認証はcontext-statから利用しません。
 
 ## 出力と診断
 
@@ -169,7 +169,7 @@ $ jq '.facts.result.value | {content, structuredContent}' mcp-result.json
 計測結果は標準出力、警告とエラーは標準エラーへ出力されます。診断には種類と対象が含まれます。
 
 ```text
-warning [measurement-skipped] [item-id]: tokens: image tokenizer is not implemented
+warning [measurement-skipped] [item-id]: tokens: image tokenizer 'future-style' is not implemented
 error [measurement-failed] [item-id]: tokens: text decoding failed
 ```
 

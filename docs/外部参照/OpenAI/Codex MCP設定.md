@@ -20,4 +20,4 @@ Codex設定にはOAuth保存情報、ChatGPTセッション認証、ツールの
 
 `--codex-config FILE`でTOMLを読み取り、有効な接続設定が1つなら自動選択する。複数ある場合は`--server NAME`で選択する。context-statは接続設定だけを`McpServerConfig`へ変換し、Codexの保存済み認証やツール権限制御は再利用しない。
 
-この文書は参照時点の調査ログであり、現行の対応範囲は`../../仕様/context-stat機能仕様.md`を正とする。
+この文書は参照時点の調査ログであり、現行の対応範囲は`../../仕様/context-stat機能仕様.md`を参照する。
