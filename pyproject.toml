@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 tokenizers = ["tokenizers>=0.21,<1"]
+anthropic-api = ["anthropic>=0.117,<1"]
 dev = [
   "pytest>=8,<9",
   "ruff>=0.9,<1",

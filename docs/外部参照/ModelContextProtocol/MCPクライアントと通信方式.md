@@ -1,6 +1,6 @@
 # MCPクライアントと通信方式
 
-MCP実機接続を採用する際の参照時点の調査ログである。現行版の挙動は`../../仕様/context-stat機能仕様.md`と`../../現状/context-statの現状.md`を正とする。
+MCP実機接続を採用する際の参照時点の調査ログである。現行版の挙動は`../../仕様/context-stat機能仕様.md`、仕様との差分は`../../現状/context-statの現状.md`を正とする。
 
 ## 参照先
 
@@ -23,13 +23,13 @@ MCP実機接続を採用する際の参照時点の調査ログである。現�
 
 - JSON-RPC、初期化、能力交渉、transportは公式Python SDKをアダプター越しに利用する。
 - stdioとStreamable HTTPを設定で選択し、stdioのコマンドと引数は分離して保持する。
-- MCPの論理リクエスト、返却content、構造化値を計測し、`--allow-online`とは分離する。
-- SDKからwire-levelの値を取得できないため、protocolのトークン計測は`skip`として記録する。
+- MCPの論理リクエスト、返却content、構造化値を計測する。
+- wire-levelのprotocolメッセージはトークン計測の対象にせず、論理payloadだけを計測する。
 
 ## 更新時の確認事項
 
 - MCPのプロトコル版と公式Python SDKのAPIは変化するため、依存更新時に採用版とtransport APIを再確認する。
-- MCP hostがtool callやtool resultをLLMへ渡す具体的なシリアライズはhost実装に依存する。現行版は論理payloadを計測し、wire-levelの値を推定しない。
+- MCP hostがtool callやtool resultをLLMへ渡す具体的なシリアライズはhost実装に依存する。現行版は論理payloadだけを計測し、wire-levelの値を計測・推定しない。
 
 ## 取り扱い
 

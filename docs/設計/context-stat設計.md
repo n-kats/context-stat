@@ -1,6 +1,6 @@
 # context-stat設計
 
-この文書は、現行実装の責務と論理的な境界を説明する。後半の`UseCase`や`ContentSource`などの名前は責務の単位であり、すべてが同名のPythonクラスとして存在することを意味しない。実際の配置は`../目次.md`、実装済み範囲は`../現状/context-statの現状.md`を参照する。
+この文書は、現行実装の責務と論理的な境界を説明する。後半の`UseCase`や`ContentSource`などの名前は責務の単位であり、すべてが同名のPythonクラスとして存在することを意味しない。実際の配置は`../目次.md`、未完了の構造上の差分は`../現状/context-statの現状.md`を参照する。
 
 現行実装のファイル責務と、まだ分離していない論理境界を同じ図で示す。現行実装は`cli.py`から各アダプターとドメインサービスを呼び出す構成である。実際に存在する型・関数を確認するときはソースと`../現状/`を優先し、論理名を実装済みクラス名として扱わない。
 
@@ -10,7 +10,7 @@
 - ファイル、標準入力、コマンド結果、Jinjaの結果、Git差分、MCPの送受信内容を、共通の計測対象に変換する。
 - トークン計測、画像計測、外部接続、出力形式は交換可能な境界を持たせる。
 - ドメイン層はClick、Git、MCP SDK、各トークナイザーなどの外部ライブラリに依存しない。
-- MCPクライアント用の公式Python SDKとtiktokenはコア依存として標準インストールに含める。追加のトークンバックエンドだけを遅延ロードする。
+- MCPクライアント用の公式Python SDKとtiktokenはコア依存として標準インストールに含める。追加のトークンバックエンドはextraから遅延ロードする。
 - 画像トークン方式は、画像ライブラリの既定動作ではなく、context-stat側のコードとテストで管理する。
 - MCPは、context-statがMCPサーバーに接続して実機の一覧取得またはリクエスト実行を行う構成だけを扱う。MCPサーバー自体をcontext-statに組み込む機能や、MCP形式の記録ファイルを直接集計する機能は設計対象にしない。
 
@@ -147,10 +147,12 @@ Command
        -> MeasurementService
             -> TextMetricsCalculator
             -> TokenCounter
+                 -> TiktokenBackend / TokenizersBackend / AnthropicApiBackend
             -> ImageMetricsCalculator
                  -> ImageMetadataReader
                  -> ImageTokenPolicyRegistry
                  -> ImageTokenEstimator
+                 -> AnthropicApiBackend
        -> MeasurementReport
        -> OutputRenderer
 ```
@@ -160,9 +162,9 @@ Command
 - `UseCase`: コマンドごとの処理順序を組み立てる。計測式は持たない。
 - `ContentSource`: 入力元を読み、`ContentItem`を返す。
 - `MeasurementService`: 共通の文字数、行数、バイト数、トークン数、画像属性の計測を実行する。
-- `TokenCounter`: 指定されたテキスト用バックエンドとトークナイザーでテキストトークン数を返す。
+- `TokenCounter`: 指定されたテキスト用バックエンドとトークナイザーでテキストトークン数を返す。`AnthropicApiBackend`はモデルIDを受け取り、APIの`input_tokens`を外部計測値として返す。
 - `ImageTokenPolicy`: `gpt-5.6-style`など、画像トークン方式の計算条件と対応状態を定義する。
-- `ImageTokenEstimator`: 解決された画像方式に従って画像トークン数と上限判定を返す。対応外形式、アニメーション、未実装方式は`skip`を返す。画像の読み取り失敗は、画像属性を要求していれば属性側を`failed`、画像トークン側を`skip`として計測サービスが扱う。
+- `ImageTokenEstimator`: 解決された画像方式に従って画像トークン数と上限判定を返す。`anthropic-api`の場合は`AnthropicApiBackend`へ画像を渡す。対応外形式、アニメーション、未実装方式は`skip`を返す。画像の読み取り失敗は、画像属性を要求していれば属性側を`failed`、画像トークン側を`skip`として計測サービスが扱う。
 - `OutputRenderer`: RichのTreeなどを使ってレポートを人間向けまたはJSON形式へ変換する。skipやfailedの注記は対象行へ重複表示せず、診断へ集約する。
 
 ## 入力元とユースケース
@@ -188,18 +190,20 @@ TokenBackendResolver
   -> TokenCounter
        -> TiktokenBackend
        -> TokenizersBackend
+       -> AnthropicApiBackend
 
 ImageTokenPolicyRegistry
   -> ImageTokenPolicy
        -> image metadata / limits / detail / normalization rule
   -> ImageTokenEstimator
+  -> AnthropicApiBackend
 ```
 
-`TokenBackendResolver`は`--backend`、`--text-tokenizer`、インストール済みextra、オンライン許可を見てテキスト用バックエンドを解決する。`auto`はtiktokenを選択し、不整合時にはフォールバックせずエラーにする。オンライン型のトークナイザーや計測バックエンドを追加する場合は、`--allow-online`がない状態で入力を送信しない。
+`TokenBackendResolver`は`--backend`、`--text-tokenizer`、インストール済みextra、外部通信許可を見てテキスト用バックエンドを解決する。`auto`はtiktokenを選択し、不整合時にはフォールバックせずエラーにする。`anthropic-api`はextraから遅延ロードし、`--text-tokenizer`をモデルIDとして`messages/count_tokens`を呼び出す。`--allow-online`がない状態ではSDKのimportと入力送信を行わない。
 
-画像はテキスト用`TokenCounter`へ渡さない。`ImageTokenEstimator`は元画像のメタデータを受け取り、画像方式に基づいて次を返す。
+画像は通常、テキスト用`TokenCounter`へ渡さない。`ImageTokenEstimator`は元画像のメタデータを受け取り、画像方式に基づいて次を返す。`--image-tokenizer anthropic-api`の場合だけ、画像データとメディアタイプを`AnthropicApiBackend`へ渡し、`--text-tokenizer`のモデルIDでAPI計測する。
 
-既定の`gpt-5.6-style`は元画像の幅と高さから32x32パッチ数を算出する。現行版で実装している画像方式はこれだけであり、context-statはリサイズを実行しない。GPT-5.6の入力形式に含まれない形式とアニメーションGIFは`skip`にする。
+既定の`gpt-5.6-style`は元画像の幅と高さから32x32パッチ数を算出する。`anthropic-api`はbase64のimage content blockをAPIへ送り、返却された`input_tokens`を使う。どちらの方式でもcontext-statはリサイズを実行しない。GPT-5.6の入力形式に含まれない形式とアニメーションGIFは、ローカル方式では`skip`にする。
 
 - 元画像の属性
 - 画像方式の制約
@@ -221,7 +225,7 @@ McpListUseCase / McpRequestUseCase
             -> official mcp SDK
                  -> stdio / Streamable HTTP
   -> McpExchangeRecorder
-       -> generated / returned / protocol-observed
+       -> generated / returned
   -> McpContentExtractor
        -> ContentItem[]
 ```
@@ -262,11 +266,11 @@ Streamable HTTPは`url`を必須とし、認証値は環境変数名だけを設
 
 ### `OfficialMcpSdkAdapter`
 
-公式Python SDKのclient sessionとtransportを`McpClientPort`へ変換する。SDKの版変更はこのアダプター内に閉じ込める。SDKからwire-levelのJSON-RPC envelopeや通知を取得できない場合、protocol計測を推定しない。
+公式Python SDKのclient sessionとtransportを`McpClientPort`へ変換する。SDKの版変更はこのアダプター内に閉じ込める。wire-levelのJSON-RPC envelopeや通知は、SDKから取得できてもcontext-statの計測対象にはしない。
 
 ### `McpExchangeRecorder`
 
-論理リクエスト、返却結果、content、実行時間、エラーを記録する。結果には`direction`と`semantic_role`を持たせる。`generated`と`returned`は別合計にし、initializeなどのprotocolメッセージはコンテキスト合計へ加算しない。SDKからwire-level情報を取得できない場合、protocolは`skip`とする。MCPが`isError: true`を返した場合は、返却結果の状態を`facts.result`へ記録し、通信・プロトコル例外とは区別する。返却結果の表示値は、画像データを寸法表示へ置き換えたサニタイズ済み値とし、本文の表示は`-v`/`--verbose`指定時に限る。
+論理リクエスト、返却結果、content、実行時間、エラーを記録する。結果には`direction`と`semantic_role`を持たせる。`generated`と`returned`は別合計にし、initializeなどのprotocolメッセージは計測対象にもコンテキスト合計にも含めない。wire-levelのprotocol値は`skip`や推定値として記録しない。MCPが`isError: true`を返した場合は、返却結果の状態を`facts.result`へ記録し、通信・プロトコル例外とは区別する。返却結果の表示値は、画像データを寸法表示へ置き換えたサニタイズ済み値とし、本文の表示は`-v`/`--verbose`指定時に限る。
 
 ### `McpContentExtractor`
 
@@ -279,14 +283,12 @@ Streamable HTTPは`url`を必須とし、認証値は環境変数名だけを設
 ## 現行実装で確定した事項
 
 - MCP設定はJSONまたはCodex TOMLとし、stdioは`command`、Streamable HTTPは`url`を必須とする。Codex TOMLは`[mcp_servers.<名前>]`から接続設定を変換する。
-- MCPのSDK依存は`mcp>=2,<2.1`とし、wire-levelのトークン数はSDKから取得できないため`skip`の事実情報で記録する。
+- MCPのSDK依存は`mcp>=2,<2.1`とし、wire-levelのprotocolメッセージは計測対象にしない。
 - payloadは計測対象を保持する不変データクラスとし、ストリーミング再読込は現行版の対象外とする。
 - Git差分はファイル単位のpatchを`ContentItem`として扱い、変更ファイル数・追加行数・削除行数は`ContentBundle.facts`へ分離する。
 - JSONの公開スキーマは`schema_version=1`とし、機能仕様に定義する。
-- 画像方式は現行版では`gpt-5.6-style`だけを実装し、公式根拠のない方式へフォールバックしない。
+- 画像方式は現行版では`gpt-5.6-style`と`anthropic-api`を実装し、公式根拠のない方式へフォールバックしない。
 
 ## 将来拡張
 
 - 公式仕様と入力条件が確定した追加の画像トークン方式。
-- モデル固有の方式、オンライン送信条件、外部Token Count APIを一体で定義した追加バックエンド。
-- MCP SDKがwire-levelの送受信値を公開した場合のprotocol計測。

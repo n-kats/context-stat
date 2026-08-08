@@ -1,6 +1,6 @@
 # Claudeトークンカウント
 
-Claude対応を採用する前の参照時点の調査ログである。現行版にClaude用バックエンド、モデル選択、画像方式は実装していない。
+AnthropicのToken Count APIを`anthropic-api`バックエンドへ反映するための参照ログである。ローカルのClaude用トークナイザーは実装せず、APIを使う場合だけ入力を外部へ送信する。
 
 ## 参照先
 
@@ -11,18 +11,18 @@ Claude対応を採用する前の参照時点の調査ログである。現行�
 
 ## 参照時点の確認事項
 
-- Token Count APIは、メッセージ、システムプロンプト、ツール、画像、PDFなどを含む入力のトークン数を計測できる。
-- Token Count APIの結果は推定値であり、実際の入力トークン数と少し異なる場合がある。
-- APIに渡すモデルによって使用されるトークナイザーが変わるため、モデルを指定して計測する必要がある。
-- Visionの画像トークン数は、画像の幅と高さを28ピクセル単位のパッチに分けた概算式で説明されている。
-- 画像がモデルの上限を超える場合、Claude側がアスペクト比を維持して縮小し、必要に応じて28の倍数になるようパディングしてから画像トークン数を扱う仕様がある。
-- Claude Fable 5、Claude Mythos 5、Claude Sonnet 5は高解像度層（長辺2576px、4784 visual tokens）として扱い、Claude Opus 5は公式一覧上の高解像度層に含まれないため標準層（長辺1568px、1568 visual tokens）として扱う。
-- Visionで受け付ける画像形式はJPEG、PNG、GIF、WebPで、アニメーションは最初のフレームだけが使われる。最大寸法は8000x8000px、Claude APIへ直接渡す画像のbase64後サイズ上限は10MBである。
+- Token Count APIは、メッセージ、システムプロンプト、ツール、画像、PDFなど、Messages APIと同じ構造の入力を計測できる。
+- 応答には`input_tokens`が含まれる。値はAPIの入力トークン数であり、システム最適化のために追加されるトークンを含む場合がある。
+- APIに渡すモデルによって使用されるトークナイザーが変わるため、実際に利用するモデルIDを指定して計測する必要がある。例としてClaude 5系では`claude-sonnet-5`や`claude-opus-5`を指定する。
+- Token Count APIの値は、Messages APIの実際の使用量と少し異なる場合がある。
+- 画像はbase64のimage content blockとしてMessages API形式へ含められる。形式、寸法、上限、プロバイダー側の正規化はAnthropicの現行仕様に従うため、context-statが独自のリサイズ式へ置き換えない。
 
 ## 現行実装への扱い
 
-- 現行版では、このログの内容を計測方式やバックエンドとして使用しない。
-- Claude対応を追加する場合は、公式仕様を再確認したうえで、方式名、外部送信条件、画像処理規則、テストを別途定義する。
+- `anthropic-api`はextraから導入する選択式バックエンドであり、`auto`から選択しない。
+- テキストでは`--text-tokenizer`のモデルIDと本文を1つのuserメッセージとしてAPIへ渡す。
+- 画像では`--image-tokenizer anthropic-api`を指定し、`--text-tokenizer`のモデルIDと画像データをAPIへ渡す。
+- `--allow-online`がない場合はSDKを読み込まず、入力を送信しない。API計測値は`external=true`として記録する。
 
 ## 取り扱い
 

@@ -31,6 +31,24 @@ def test_stat_stdin_uses_default_text_tokenizer() -> None:
     assert "|      3 |" in result.output
 
 
+def test_anthropic_backend_requires_allow_online_without_sending_input() -> None:
+    result = CliRunner().invoke(
+        main,
+        [
+            "--backend",
+            "anthropic-api",
+            "--text-tokenizer",
+            "claude-sonnet-5",
+            "stat",
+            "-",
+        ],
+        input="secret prompt\n",
+    )
+
+    assert result.exit_code == 1
+    assert "requires --allow-online" in result.output
+
+
 def test_stat_json_is_machine_readable() -> None:
     result = CliRunner().invoke(
         main,

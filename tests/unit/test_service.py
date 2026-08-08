@@ -84,6 +84,52 @@ def test_image_metadata_and_default_tokenizer_policy() -> None:
     assert measured.limit_status.value == "within"
 
 
+def test_image_anthropic_backend_uses_online_token_counter() -> None:
+    output = io.BytesIO()
+    Image.new("RGB", (32, 16), color="white").save(output, format="PNG")
+
+    class OnlineTokenCounter(FakeTokenCounter):
+        def count_image(self, data: bytes, **kwargs: object) -> MetricValue:
+            assert data == output.getvalue()
+            assert kwargs == {
+                "model": "claude-sonnet-5",
+                "media_type": "image/png",
+                "allow_online": True,
+            }
+            return MetricValue.exact(
+                19,
+                unit="tokens",
+                method="anthropic-api:claude-sonnet-5",
+                external=True,
+            )
+
+    item = ContentItem(
+        item_id="image:online",
+        origin="test",
+        label="image.png",
+        kind=ContentKind.IMAGE,
+        payload=ImagePayload(output.getvalue(), source="image.png"),
+    )
+    service = MeasurementService(
+        token_counter=OnlineTokenCounter(),
+        image_analyzer=ImageMetadataReader(),
+        image_estimator=ImageTokenEstimator(),
+    )
+
+    measured = service.measure_item(
+        item,
+        MeasurementOptions(
+            text_tokenizer="claude-sonnet-5",
+            image_tokenizer="anthropic-api",
+            allow_online=True,
+            metrics=frozenset({"image_tokens"}),
+        ),
+    )
+
+    assert measured.metrics["image_tokens"].value == 19
+    assert measured.metrics["image_tokens"].external is True
+
+
 def test_failed_image_metrics_are_inserted_in_a_stable_order() -> None:
     item = ContentItem(
         item_id="image:failed",

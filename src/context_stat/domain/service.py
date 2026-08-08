@@ -154,7 +154,7 @@ class MeasurementService:
                 tokenizer=options.text_tokenizer,
                 allow_online=options.allow_online,
             )
-        except ContextStatError as exc:
+        except (ContextStatError, ValueError) as exc:
             return MetricValue.failed(unit="tokens", reason=str(exc))
 
     def _measure_image(
@@ -190,6 +190,29 @@ class MeasurementService:
             metrics["frames"] = MetricValue.exact(metadata.frames, unit="frames")
         if "image_tokens" not in options.metrics:
             return metrics, LimitStatus.UNKNOWN
+        if options.image_tokenizer == "anthropic-api":
+            metrics["image_tokens"] = self._safe_image_token_count(
+                payload,
+                metadata.media_type,
+                options,
+            )
+            return metrics, LimitStatus.UNKNOWN
         image_result = self._image_estimator.estimate(metadata, options.image_tokenizer)
         metrics["image_tokens"] = image_result.metric
         return metrics, image_result.limit_status
+
+    def _safe_image_token_count(
+        self,
+        payload: ImagePayload,
+        media_type: str,
+        options: MeasurementOptions,
+    ) -> MetricValue:
+        try:
+            return self._token_counter.count_image(
+                payload.data,
+                model=options.text_tokenizer,
+                media_type=media_type,
+                allow_online=options.allow_online,
+            )
+        except (ContextStatError, ValueError) as exc:
+            return MetricValue.failed(unit="tokens", reason=str(exc))

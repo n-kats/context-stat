@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import base64
+import sys
+from types import SimpleNamespace
+
 import pytest
 
 from context_stat.adapters.token import TokenCounterResolver
+from context_stat.domain.errors import OnlineNotAllowedError
 
 
 def test_auto_uses_o200k_base_by_default() -> None:
@@ -89,3 +94,76 @@ def test_unknown_backend_is_rejected() -> None:
             tokenizer=None,
             allow_online=False,
         )
+
+
+def test_anthropic_backend_requires_allow_online_before_importing_sdk() -> None:
+    with pytest.raises(OnlineNotAllowedError, match="--allow-online"):
+        TokenCounterResolver().count(
+            "hello",
+            backend="anthropic-api",
+            tokenizer="claude-opus-5",
+            allow_online=False,
+        )
+
+
+def test_anthropic_backend_counts_text_with_provider_api(monkeypatch) -> None:
+    calls = []
+
+    class FakeMessages:
+        def count_tokens(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(input_tokens=14)
+
+    class FakeAnthropic:
+        def __init__(self):
+            self.messages = FakeMessages()
+
+    monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(Anthropic=FakeAnthropic))
+
+    metric = TokenCounterResolver().count(
+        "hello",
+        backend="anthropic-api",
+        tokenizer="claude-opus-5",
+        allow_online=True,
+    )
+
+    assert metric.value == 14
+    assert metric.method == "anthropic-api:claude-opus-5"
+    assert metric.external is True
+    assert calls == [
+        {
+            "model": "claude-opus-5",
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+    ]
+
+
+def test_anthropic_backend_counts_image_with_base64_content(monkeypatch) -> None:
+    calls = []
+
+    class FakeMessages:
+        def count_tokens(self, **kwargs):
+            calls.append(kwargs)
+            return {"input_tokens": 23}
+
+    class FakeAnthropic:
+        def __init__(self):
+            self.messages = FakeMessages()
+
+    monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(Anthropic=FakeAnthropic))
+    data = b"image bytes"
+
+    metric = TokenCounterResolver().count_image(
+        data,
+        model="claude-sonnet-5",
+        media_type="image/png",
+        allow_online=True,
+    )
+
+    assert metric.value == 23
+    image_source = calls[0]["messages"][0]["content"][0]["source"]
+    assert image_source == {
+        "type": "base64",
+        "media_type": "image/png",
+        "data": base64.standard_b64encode(data).decode("ascii"),
+    }

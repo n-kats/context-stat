@@ -473,13 +473,6 @@ def git_diff(context: click.Context, git_args: tuple[str, ...]) -> None:
         raise click.ClickException(str(exc)) from exc
 
 
-def _mcp_protocol_fact() -> dict[str, str]:
-    return {
-        "status": "skip",
-        "reason": "the official SDK adapter does not expose wire-level token counts",
-    }
-
-
 def _resolve_mcp_config(
     config_path: Path | None,
     url: str | None,
@@ -627,7 +620,6 @@ async def _mcp_list_report(
             "transport": config.transport,
         },
         groups=groups,
-        facts={"protocol_measurement": _mcp_protocol_fact()},
         warnings=warnings,
     )
     _add_measurement_failures(report)
@@ -813,7 +805,6 @@ async def _mcp_request_report(
             ),
         ],
         facts={
-            "protocol_measurement": _mcp_protocol_fact(),
             "result": {
                 "status": result_status,
                 "is_error": result_is_error,

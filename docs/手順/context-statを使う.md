@@ -2,19 +2,38 @@
 
 ## 導入
 
-```text
+```console
 uv tool install .
 ```
 
-`tokenizers`を使う場合だけ追加します。
+## バックエンド
 
-```text
+標準のテキスト方式は`tiktoken`です。`tokenizers`を使う場合は、バックエンド指定と同時にextraを導入します。
+
+```console
 uv tool install ".[tokenizers]"
+```
+
+```console
+context-stat --backend tokenizers --text-tokenizer ./tokenizer.json stat src/
+```
+
+`anthropic-api`を使う場合も、バックエンド指定と同時にextraを導入します。`--text-tokenizer`へAnthropicのモデルIDを指定し、`--allow-online`を付けた場合だけ入力を送信します。
+
+```console
+uv tool install ".[anthropic-api]"
+context-stat --backend anthropic-api --text-tokenizer claude-opus-5 --allow-online stat README.md
+```
+
+画像をAnthropic APIで計測する場合は`--image-tokenizer anthropic-api`を追加します。
+
+```console
+context-stat --backend anthropic-api --text-tokenizer claude-opus-5 --image-tokenizer anthropic-api --allow-online stat image.png
 ```
 
 ## ファイルとディレクトリ
 
-```text
+```console
 context-stat stat README.md
 context-stat stat src/
 context-stat --format tree --metrics all stat src/
@@ -25,13 +44,13 @@ context-stat --format json --sort tokens --order desc stat src/
 
 標準入力は`-`です。
 
-```text
+```console
 printf 'hello\n' | context-stat stat -
 ```
 
 ## 計測と並列実行
 
-```text
+```console
 context-stat --metrics all stat src/
 context-stat --sort tokens --order desc stat src/
 context-stat -p 4 stat src/
@@ -43,7 +62,7 @@ context-stat -p 4 stat src/
 
 `--command`は各ファイルのパスを`{{path}}`へ渡します。標準出力を計測し、標準エラー、終了状態、タイムアウト、出力切り詰めは診断として扱います。
 
-```text
+```console
 context-stat stat src/ --command 'cat "{{path}}"'
 context-stat stat src/ --command 'cat "{{path}}"' --timeout 5 --max-output-bytes 100000
 ```
@@ -54,7 +73,7 @@ context-stat stat src/ --command 'cat "{{path}}"' --timeout 5 --max-output-bytes
 
 テンプレートをレンダリングした結果だけを計測します。
 
-```text
+```console
 context-stat jinja prompt.j2 --params '{"name":"Ada"}'
 ```
 
@@ -62,7 +81,7 @@ context-stat jinja prompt.j2 --params '{"name":"Ada"}'
 
 Gitの引数は`git diff`と同じ形で指定し、`--`以降をpathspecにします。共通オプションはGitコマンドより前に置きます。
 
-```text
+```console
 context-stat --format json git diff HEAD -- src/
 context-stat --metrics all git diff main HEAD -- README.md
 ```
@@ -82,7 +101,7 @@ stdio設定の例です。
 }
 ```
 
-```text
+```console
 context-stat mcp list --config mcp.json
 context-stat mcp list --kind tools --config mcp.json
 context-stat -v mcp request --config mcp.json --method tools/call --name echo --params '{"message":"hello"}'
@@ -94,7 +113,7 @@ context-stat -v mcp request --url https://example.test/mcp --header-from-env Aut
 
 `mcp request`は計測表の後にMCP結果の状態を表示する。`-v`/`--verbose`を共通オプションとして付けた場合だけ、その後に返却結果本文を表示する。返却contentに画像がある場合は、Base64を表示せず、MIME typeと幅・高さへ置き換える。MCPサーバーが`isError: true`を返した場合も結果状態と計測値を出力し、標準エラーへ診断を出したうえで終了コードは失敗になる。
 
-MCP接続は`--config FILE`、Codex設定の`--codex-config FILE`、`--url URL`のいずれかを指定します。`--url`はStreamable HTTPとして扱われます。Codex設定は`[mcp_servers.<名前>]`を読み取り、有効なサーバーが1つなら自動選択します。複数ある場合は`--server NAME`を指定します。`--config`、`--codex-config`、`--url`は同時に指定できません。`--allow-online`はMCP接続の許可ではありません。
+MCP接続は`--config FILE`、Codex設定の`--codex-config FILE`、`--url URL`のいずれかを指定します。`--url`はStreamable HTTPとして扱われます。Codex設定は`[mcp_servers.<名前>]`を読み取り、有効なサーバーが1つなら自動選択します。複数ある場合は`--server NAME`を指定します。`--config`、`--codex-config`、`--url`は同時に指定できません。
 
 Codex設定からは、stdioの`command`、`args`、`cwd`、`env`と、Streamable HTTPの`url`、`headers`、`env_http_headers`、`bearer_token_env_var`を読み取ります。CodexのOAuth保存情報やChatGPTセッション認証はcontext-statから利用しません。
 
@@ -102,7 +121,7 @@ Codex設定からは、stdioの`command`、`args`、`cwd`、`env`と、Streamabl
 
 計測結果は標準出力、警告とエラーは標準エラーです。画像、バイナリ、壊れた入力、未導入バックエンドなどで対象を計測できない場合は、結果の状態と最後の診断を確認します。
 
-```text
+```console
 context-stat --format json stat src/ 1>result.json 2>warnings.log
 ```
 
@@ -156,7 +175,7 @@ error [measurement-failed] [item-id]: tokens: text decoding failed
 
 ## シェル補完
 
-```text
+```console
 context-stat completions bash
 context-stat completions zsh
 context-stat completions fish
