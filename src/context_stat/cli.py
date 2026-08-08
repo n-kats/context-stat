@@ -29,10 +29,17 @@ from context_stat.adapters.mcp import (
 from context_stat.adapters.process import CommandExecution, run_for_path
 from context_stat.adapters.templating import render_template
 from context_stat.adapters.token import TokenCounterResolver
-from context_stat.domain.content import ContentItem, ContentKind, StructuredPayload, TextPayload
+from context_stat.domain.content import (
+    ContentItem,
+    ContentKind,
+    ImagePayload,
+    StructuredPayload,
+    TextPayload,
+)
 from context_stat.domain.errors import ContextStatError
 from context_stat.domain.measurement import (
     SORT_KEYS,
+    MeasuredItem,
     MeasurementOptions,
     parse_metric_selection,
     parse_sort_selection,
@@ -46,6 +53,7 @@ from context_stat.output import render_diagnostics, render_report
 @dataclass(frozen=True)
 class Runtime:
     options: MeasurementOptions
+    verbose: bool = False
 
     def service(self) -> MeasurementService:
         return MeasurementService(
@@ -56,6 +64,13 @@ class Runtime:
 
 
 _GIT_SEPARATOR = "\x00context-stat-git-separator\x00"
+
+
+@dataclass(frozen=True)
+class McpConnection:
+    config: McpServerConfig
+    config_path: Path | None
+    source: str
 
 
 class GitDiffCommand(click.Command):
@@ -83,6 +98,7 @@ def _measurement_request() -> dict[str, Any]:
         "sort": options.sort,
         "order": options.order,
         "parallel": options.parallel,
+        "verbose": _runtime().verbose,
     }
 
 
@@ -92,6 +108,7 @@ def _emit(report: MeasurementReport) -> None:
             report,
             _runtime().options.output_format,
             include_issues=False,
+            verbose=_runtime().verbose,
         )
     )
     diagnostics = render_diagnostics(report)
@@ -151,6 +168,7 @@ def _add_measurement_failures(report: MeasurementReport) -> None:
 @click.option("--text-tokenizer", default="o200k_base", show_default=True)
 @click.option("--image-tokenizer", default="gpt-5.6-style", show_default=True)
 @click.option("--allow-online", is_flag=True)
+@click.option("-v", "--verbose", is_flag=True, help="MCP返却結果本文を表示する。")
 @click.option(
     "--format",
     "--output-format",
@@ -193,6 +211,7 @@ def main(
     text_tokenizer: str,
     image_tokenizer: str,
     allow_online: bool,
+    verbose: bool,
     output_format: str,
     metrics: str,
     sort_by: str,
@@ -225,7 +244,8 @@ def main(
             sort=canonical_sort,
             order=order,
             parallel=parallel,
-        )
+        ),
+        verbose=verbose,
     )
 
 
@@ -460,6 +480,65 @@ def _mcp_protocol_fact() -> dict[str, str]:
     }
 
 
+def _resolve_mcp_config(
+    config_path: Path | None,
+    url: str | None,
+    header_from_env: tuple[str, ...],
+    *,
+    codex_config_path: Path | None = None,
+    server_name: str | None = None,
+) -> McpConnection:
+    sources = [config_path is not None, codex_config_path is not None, url is not None]
+    if sum(sources) > 1:
+        raise ValueError("--config, --codex-config, and --url cannot be used together")
+    if not any(sources):
+        raise ValueError("one of --config, --codex-config, or --url is required")
+    if config_path is not None:
+        if header_from_env or server_name:
+            raise ValueError(
+                "--header-from-env and --server can only be used with --url or --codex-config"
+            )
+        return McpConnection(McpServerConfig.from_path(config_path), config_path, "config")
+    if codex_config_path is not None:
+        if header_from_env:
+            raise ValueError("--header-from-env can only be used with --url")
+        return McpConnection(
+            McpServerConfig.from_codex_path(codex_config_path, server_name),
+            codex_config_path,
+            "codex-config",
+        )
+    if server_name:
+        raise ValueError("--server can only be used with --codex-config")
+
+    headers: dict[str, str] = {}
+    for specification in header_from_env:
+        header, separator, environment_name = specification.partition("=")
+        if not separator or not header or not environment_name:
+            raise ValueError("--header-from-env must use HEADER=ENV format")
+        if header in headers:
+            raise ValueError(f"duplicate HTTP header in --header-from-env: {header}")
+        headers[header] = environment_name
+    return McpConnection(
+        McpServerConfig(
+            transport="streamable-http",
+            url=url,
+            headers_from_env=headers or None,
+        ),
+        None,
+        "url",
+    )
+
+
+def _mcp_request_options(connection: McpConnection) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "config": (str(connection.config_path) if connection.config_path is not None else None),
+        "source": connection.source,
+    }
+    if connection.config.server_name is not None:
+        result["server"] = connection.config.server_name
+    return result
+
+
 async def _mcp_list_all(
     client: OfficialMcpSdkAdapter, method_name: str, item_kind: str
 ) -> tuple[dict[str, Any], int]:
@@ -488,9 +567,12 @@ async def _mcp_list_all(
         cursor = next_cursor
 
 
-async def _mcp_list_report(config_path: Path, kind: str) -> MeasurementReport:
+async def _mcp_list_report(
+    connection: McpConnection,
+    kind: str,
+) -> MeasurementReport:
     runtime = _runtime()
-    config = McpServerConfig.from_path(config_path)
+    config = connection.config
     requested = ("tools", "resources", "prompts") if kind == "all" else (kind,)
     method_by_kind = {
         "tools": "list_tools",
@@ -541,7 +623,7 @@ async def _mcp_list_report(config_path: Path, kind: str) -> MeasurementReport:
         source="mcp-list",
         request={
             **_measurement_request(),
-            "config": str(config_path),
+            **_mcp_request_options(connection),
             "transport": config.transport,
         },
         groups=groups,
@@ -564,11 +646,117 @@ def _mcp_request_payload(method: str, name: str, params: dict[str, Any]) -> dict
     return {"method": method, "params": {"name": name, "arguments": params}}
 
 
+def _mcp_result_items(
+    items: tuple[ContentItem, ...], measured: list[MeasuredItem]
+) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    image_reader = ImageMetadataReader()
+    for item, measured_item in zip(items, measured, strict=True):
+        summary: dict[str, Any] = {
+            "label": measured_item.label,
+            "kind": measured_item.kind,
+        }
+        if isinstance(item.payload, ImagePayload):
+            media_type = item.payload.media_type
+            if media_type:
+                summary["media_type"] = media_type
+            try:
+                metadata = image_reader.read(item.payload.data)
+            except ContextStatError:
+                summary["dimensions"] = None
+            else:
+                if "media_type" not in summary:
+                    summary["media_type"] = metadata.media_type
+                summary["dimensions"] = {
+                    "width": metadata.width,
+                    "height": metadata.height,
+                }
+                if metadata.frames != 1:
+                    summary["frames"] = metadata.frames
+        summaries.append(summary)
+    return summaries
+
+
+def _mcp_image_marker(summary: dict[str, Any] | None) -> str:
+    if not summary:
+        return "<image dimensions=unknown>"
+    media_type = str(summary.get("media_type") or "image")
+    dimensions = summary.get("dimensions")
+    if isinstance(dimensions, dict):
+        width = dimensions.get("width")
+        height = dimensions.get("height")
+        if isinstance(width, int) and isinstance(height, int):
+            return f"<{media_type} {width}x{height}>"
+    return f"<{media_type} dimensions=unknown>"
+
+
+def _sanitize_mcp_value(value: Any, summary: dict[str, Any] | None = None) -> Any:
+    if isinstance(value, list):
+        return [_sanitize_mcp_value(entry, summary) for entry in value]
+    if not isinstance(value, dict):
+        return value
+    sanitized = {key: _sanitize_mcp_value(entry, summary) for key, entry in value.items()}
+    is_image = value.get("type") == "image" or str(value.get("mimeType", "")).startswith("image/")
+    if is_image:
+        for field in ("data", "blob"):
+            if field in value:
+                sanitized[field] = _mcp_image_marker(summary)
+    return sanitized
+
+
+def _mcp_result_value(
+    value: Any,
+    method: str,
+    summaries: list[dict[str, Any]],
+) -> Any:
+    summary_by_label = {
+        str(summary["label"]): summary
+        for summary in summaries
+        if isinstance(summary.get("label"), str)
+    }
+    display = _sanitize_mcp_value(value)
+    if not isinstance(display, dict) or not isinstance(value, dict):
+        return display
+
+    for key, label_pattern in (
+        ("content", f"{method}.content"),
+        ("contents", f"{method}.contents"),
+    ):
+        entries = value.get(key)
+        if not isinstance(entries, list):
+            continue
+        display[key] = [
+            _sanitize_mcp_value(
+                entry,
+                summary_by_label.get(f"{label_pattern}[{index}]"),
+            )
+            for index, entry in enumerate(entries)
+        ]
+
+    messages = value.get("messages")
+    if isinstance(messages, list):
+        displayed_messages = []
+        for index, message in enumerate(messages):
+            summary = summary_by_label.get(f"{method}.messages[{index}]")
+            if not isinstance(message, dict):
+                displayed_messages.append(_sanitize_mcp_value(message, summary))
+                continue
+            displayed_message = _sanitize_mcp_value(message)
+            if isinstance(message.get("content"), dict):
+                displayed_message["content"] = _sanitize_mcp_value(message["content"], summary)
+            displayed_messages.append(displayed_message)
+        display["messages"] = displayed_messages
+    return display
+
+
 async def _mcp_request_report(
-    config_path: Path, method: str, name: str, params: dict[str, Any]
+    connection: McpConnection,
+    method: str,
+    name: str,
+    params: dict[str, Any],
 ) -> MeasurementReport:
     runtime = _runtime()
-    config = McpServerConfig.from_path(config_path)
+    config = connection.config
     request_value = _mcp_request_payload(method, name, params)
     generated = ContentItem(
         item_id="mcp:request:generated",
@@ -593,14 +781,17 @@ async def _mcp_request_report(
     generated_measured = runtime.service().measure_items([generated], runtime.options)
     returned_measured = runtime.service().measure_items(returned_bundle.items, runtime.options)
     result_value = jsonable(result)
+    result_is_error = isinstance(result_value, dict) and result_value.get("isError") is True
     errors: list[Issue] = []
-    if isinstance(result_value, dict) and result_value.get("isError"):
+    if result_is_error:
         errors.append(Issue("mcp-request-error", "MCP returned an error result"))
+    result_status = "error" if result_is_error else "ok"
+    result_items = _mcp_result_items(returned_bundle.items, returned_measured)
     report = MeasurementReport(
         source="mcp-request",
         request={
             **_measurement_request(),
-            "config": str(config_path),
+            **_mcp_request_options(connection),
             "transport": config.transport,
             "method": method,
             "name": name,
@@ -621,7 +812,15 @@ async def _mcp_request_report(
                 },
             ),
         ],
-        facts={"protocol_measurement": _mcp_protocol_fact()},
+        facts={
+            "protocol_measurement": _mcp_protocol_fact(),
+            "result": {
+                "status": result_status,
+                "is_error": result_is_error,
+                "items": result_items,
+                "value": _mcp_result_value(result_value, method, result_items),
+            },
+        },
         errors=errors,
     )
     _add_measurement_failures(report)
@@ -643,13 +842,46 @@ def mcp() -> None:
 @click.option(
     "--config",
     "config_path",
-    required=True,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
 )
-def mcp_list(kind: str, config_path: Path) -> None:
+@click.option(
+    "--codex-config",
+    "codex_config_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Read an MCP server from a Codex config.toml file.",
+)
+@click.option(
+    "--server",
+    "server_name",
+    default=None,
+    help="Codex MCP server name when the config contains multiple servers.",
+)
+@click.option("--url", default=None, help="Streamable HTTP server URL.")
+@click.option(
+    "--header-from-env",
+    "header_from_env",
+    multiple=True,
+    metavar="HEADER=ENV",
+    help="Read an HTTP header value from an environment variable; repeatable.",
+)
+def mcp_list(
+    kind: str,
+    config_path: Path | None,
+    codex_config_path: Path | None,
+    server_name: str | None,
+    url: str | None,
+    header_from_env: tuple[str, ...],
+) -> None:
     """List MCP tools, resources, and prompts and measure their definitions."""
     try:
-        _emit(asyncio.run(_mcp_list_report(config_path, kind)))
+        connection = _resolve_mcp_config(
+            config_path,
+            url,
+            header_from_env,
+            codex_config_path=codex_config_path,
+            server_name=server_name,
+        )
+        _emit(asyncio.run(_mcp_list_report(connection, kind)))
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -666,16 +898,51 @@ def mcp_list(kind: str, config_path: Path) -> None:
 @click.option(
     "--config",
     "config_path",
-    required=True,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
 )
-def mcp_request(method: str, name: str, params: str, config_path: Path) -> None:
+@click.option(
+    "--codex-config",
+    "codex_config_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Read an MCP server from a Codex config.toml file.",
+)
+@click.option(
+    "--server",
+    "server_name",
+    default=None,
+    help="Codex MCP server name when the config contains multiple servers.",
+)
+@click.option("--url", default=None, help="Streamable HTTP server URL.")
+@click.option(
+    "--header-from-env",
+    "header_from_env",
+    multiple=True,
+    metavar="HEADER=ENV",
+    help="Read an HTTP header value from an environment variable; repeatable.",
+)
+def mcp_request(
+    method: str,
+    name: str,
+    params: str,
+    config_path: Path | None,
+    codex_config_path: Path | None,
+    server_name: str | None,
+    url: str | None,
+    header_from_env: tuple[str, ...],
+) -> None:
     """Execute one MCP request and measure generated and returned content."""
     try:
         parsed = json.loads(params)
         if not isinstance(parsed, dict):
             raise ValueError("--params must contain a JSON object")
-        _emit(asyncio.run(_mcp_request_report(config_path, method, name, parsed)))
+        connection = _resolve_mcp_config(
+            config_path,
+            url,
+            header_from_env,
+            codex_config_path=codex_config_path,
+            server_name=server_name,
+        )
+        _emit(asyncio.run(_mcp_request_report(connection, method, name, parsed)))
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
 

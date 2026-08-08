@@ -19,13 +19,13 @@
 
 ## 計測項目
 
-計測可能な項目として、次を定義する。
+計測値またはレポート事実として、次を定義する。
 
 - バイト数
 - 文字数
 - 行数
 - トークン数
-- 入力項目数
+- 入力項目数（レポート事実）
 - 最長行の長さ
 - 項目ごとの値
 - 合計値
@@ -60,6 +60,12 @@
 
 ```text
 uv tool install "context-stat[tokenizers]"
+```
+
+ローカルのチェックアウトから導入する場合は、次を使う。
+
+```text
+uv tool install ".[tokenizers]"
 ```
 
 高速実装など追加のバックエンドも、それぞれ対応するextraを指定して導入する。extrasを指定しない標準インストールでも、tiktokenによるテキスト計測、バイト数・文字数・行数などの基本計測、MCPサーバーへの接続・一覧取得・リクエスト実行を利用できる。tokenizersを使う計測には対応するextraが必要になる。
@@ -180,7 +186,7 @@ Git差分の対象範囲や比較対象の指定方法は、Git差分パーサ�
 
 ### MCP
 
-MCPサーバーの設定とパラメータを受け取り、context-statが実際にMCPサーバーへ接続して処理を実行する。MCPサーバー自体をcontext-statに組み込む機能や、MCP形式の記録ファイルを直接集計する機能は対象としない。
+MCPサーバーの設定または接続先URLとパラメータを受け取り、context-statが実際にMCPサーバーへ接続して処理を実行する。MCPサーバー自体をcontext-statに組み込む機能や、MCP形式の記録ファイルを直接集計する機能は対象としない。
 
 MCPのJSON-RPC、初期化、能力交渉、標準transportの処理は、公式Python SDKをcontext-statのアダプター越しに利用する。context-statがMCPプロトコルを全面的に再実装しない。
 
@@ -188,9 +194,13 @@ MCPのJSON-RPC、初期化、能力交渉、標準transportの処理は、公式
 
 stdioはcontext-stat自身のネットワーク接続としては扱わないが、起動したMCPサーバー自身の外部通信までは制御しない。Streamable HTTPも設定された接続先へ通常どおり接続する。
 
+MCP操作の接続元は、JSON設定を指定する`--config FILE`、Codexの`config.toml`を指定する`--codex-config FILE`、またはStreamable HTTPの`--url URL`のいずれか一つを指定する。`--url`を指定した場合は`transport=streamable-http`として扱う。HTTPヘッダーは`--header-from-env HEADER=ENV`を繰り返して指定でき、値は環境変数から読み込む。URLとヘッダー値は計測レポートへ出力しない。`--config`、`--codex-config`、`--url`は同時に指定できない。
+
+`--codex-config FILE`はCodex設定の`[mcp_servers.<名前>]`を読み取る。有効な接続設定が1つなら自動選択し、複数ある場合は`--server NAME`で選択する。`enabled = false`のサーバーは選択対象にしない。stdioでは`command`、`args`、`cwd`、`env`を、Streamable HTTPでは`url`、`headers`、`env_http_headers`、`bearer_token_env_var`を読み取る。CodexのOAuth保存情報、ChatGPTセッション認証、ツール許可設定は再利用しない。
+
 #### 一覧取得
 
-MCPサーバーが提供するツール、リソース、プロンプトなどを取得し、定義、説明、パラメータ定義、Schemaのサイズとトークン数を計測する。
+MCPサーバーが提供するツール、リソース、プロンプトなどを取得し、定義、説明、パラメータ定義、Schemaのサイズとトークン数を計測する。tableではツールとプロンプトの`name`、リソースの`name`または`uri`を項目名として表示し、定義に説明があれば説明を表示する。リソースの`uri`は、項目名と異なる場合に表示する。JSONでは一覧定義全体を構造化メタデータとして保持する。
 
 一覧取得では、通常、ツールそのものの実行は行わない。
 
@@ -203,6 +213,8 @@ MCPサーバーが提供するツール、リソース、プロンプトなど�
 - 返却されたtext、image、structuredContentなどのcontent
 - 実行時間
 - エラーと警告
+
+`mcp request`の人間向け出力では、計測表の後に、計測表の外側へ結果状態を`result: ok`または`result: error`として表示する。`-v`/`--verbose`を指定した場合だけ、その後にMCPから返った結果本文を表示する。返却結果に画像contentがある場合は、Base64を表示せず、`<MIME type 幅x高さ>`の要約へ置き換える。`isError: true`はMCPサーバーが返した有効なエラー結果として返却側へ含め、通信・プロトコル例外とは区別する。
 
 MCPのinitialize、initialized、JSON-RPC envelope、通知などのprotocolメッセージは、generated/returnedのコンテキスト合計へ自動加算しない。公式SDKからwire-levelの値を取得できない場合、protocol計測は`skip`として扱い、取得できる論理値から推定しない。
 
@@ -237,7 +249,7 @@ tableの計測値セルは値だけを表示し、単位は列見出しで示す
 
 ### JSON出力の現行スキーマ
 
-現行の`schema_version`は`1`とする。最上位は`schema_version`、`source`、`request`、`groups`、`facts`、`warnings`、`errors`を持つ。`groups`の各要素は`name`、`items`、`facts`を持ち、ファイルまたはディレクトリを入力したpath groupには`nodes`を付加する。path group以外で計測済みの集計値がある場合は、`summary`にグループ全体のメトリクスを保持する。
+現行の`schema_version`は`1`とする。最上位は`schema_version`、`source`、`request`、`groups`、`facts`、`warnings`、`errors`を持つ。`groups`の各要素は`name`、`items`、`facts`を持ち、ファイルまたはディレクトリを入力したpath groupには`nodes`を付加する。path group以外で計測済みの集計値がある場合は、`summary`にグループ全体のメトリクスを保持する。`mcp-request`では最上位`facts.result`に`status`、`is_error`、返却contentの要約`items`を保持する。`-v`/`--verbose`指定時は、これらに加えてサニタイズ済みの返却結果`value`を保持する。画像の要約itemは`media_type`と`dimensions.width`、`dimensions.height`を持つ。`value`内の画像データは寸法表示へ置き換え、Base64を保持しない。
 
 `items`の要素は`id`、`origin`、`label`、`kind`、`direction`、`semantic_role`、`limit_status`、`metrics`、`metadata`を持つ。`metrics`の各値は`value`、`unit`、`status`、`external`を必須とし、値がある場合だけ`method`、`reason`、`details`を持つ。`status`は`measured`、`skip`、`failed`のいずれかである。`direction`、`semantic_role`、`limit_status`は対象に該当しない場合は`null`になる。
 
@@ -264,7 +276,7 @@ CLIの引数解析、サブコマンド、ヘルプ、補完にはClickを使用
 
 - Clickは標準インストールに含めるコア依存とし、バックエンドextrasとは分ける。
 - Clickのコマンドグループで、`git diff` や `mcp list` のようなサブコマンド階層を定義する。
-- `--backend`、`--text-tokenizer`、`--image-tokenizer`、`--allow-online`、`--format`、`--metrics`などcontext-stat共通のオプションは、ルートコマンドのサブコマンドより前で指定する。
+- `--backend`、`--text-tokenizer`、`--image-tokenizer`、`--allow-online`、`-v`/`--verbose`、`--format`、`--metrics`などcontext-stat共通のオプションは、ルートコマンドのサブコマンドより前で指定する。`--verbose`はMCP返却結果本文の表示だけを制御し、計測値や診断の生成条件は変更しない。
 - `--sort`は`path`、`tokens`、`bytes`、`characters`、`lines`、`max-line-length`、`image-tokens`、`width`、`height`、`frames`、`path-length`から選択する。計測項目によるソートでは、その項目を`--metrics`にも指定する。値がない対象は最後に置き、同値の場合はパスの昇順で安定化する。
 - `--order`は`asc`または`desc`とし、既定値は`asc`とする。tableとJSONは全ノードを同じソート規則で並べ、treeは同じ比較規則を使って各階層の兄弟を並べる。
 - サブコマンド固有のオプションと引数は、サブコマンドの後で指定する。

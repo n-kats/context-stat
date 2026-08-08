@@ -70,6 +70,23 @@ tests/
     mcp_stdio_server.py  # stdio/Streamable HTTP実機確認用
 ```
 
+## 論理責務と実装単位
+
+この設計で示す`Command`、`UseCase`、`ContentSource`、`OutputRenderer`、`McpExchangeRecorder`、`McpContentExtractor`は、責務を表す論理名である。現行実装では、すべてを同名のPythonクラスへ分離していない。
+
+| 論理上の責務 | 現行実装 | 状態 |
+| --- | --- | --- |
+| Command / UseCase | `cli.py`のClickコマンドと補助関数 | コマンド処理と入力・計測・出力の組み立てを同じモジュールで行う |
+| ContentSource | `adapters/filesystem.py`、`process.py`、`git.py`、`templating.py`、`mcp.py` | 入力元ごとの関数・アダプターとして実装し、共通Sourceクラスにはしていない |
+| MeasurementService | `domain/service.py`の`MeasurementService` | クラスとして実装済み |
+| TokenCounter | `adapters/token.py`の`TokenCounter` Protocolと`TokenCounterResolver` | Protocolと解決処理を実装済み |
+| ImageMetadataReader / ImageTokenEstimator | `adapters/image.py` | クラスとして実装済み |
+| MeasurementReport | `domain/report.py`の`MeasurementGroup`、`MeasurementReport`など | クラスとして実装済み |
+| OutputRenderer | `output.py`のrenderer関数群 | Rendererクラスには分離していない |
+| McpExchangeRecorder / McpContentExtractor | `adapters/mcp.py`の結果変換処理と`cli.py`のMCP処理 | 独立クラスには分離していない |
+
+この対応表は、設計上の責務と実際のクラス・関数を混同しないためのものである。現行版では、機能追加に必要な境界だけをクラスまたはProtocolとして実装し、残りの分離は将来の内部改善として扱う。
+
 MCPの通信方式とJSON-RPCライフサイクルは公式Python SDKに任せ、`adapters/mcp.py`へ閉じ込める。context-stat固有の`McpClientPort`は論理的な一覧取得・リクエスト実行の境界とし、wire transportの詳細をドメインへ公開しない。SDKからwire-levelの情報を取得できることは前提にしない。
 
 ## 基本的なドメインオブジェクト
@@ -213,7 +230,9 @@ McpListUseCase / McpRequestUseCase
 
 サーバーの起動または接続に必要な設定を表す。コマンド、引数、環境変数、接続先、接続方式などを保持する。秘密情報そのものをレポートやログへ出力する責務は持たない。
 
-現行版の設定ファイルはJSONオブジェクトとし、stdioは次の形式を使う。
+CLIではJSON設定を`--config`で指定する方法、CodexのTOML設定を`--codex-config`で指定する方法、Streamable HTTPの接続先を`--url`で直接指定する方法を提供する。Codex設定に複数の有効なMCPサーバーがある場合は`--server NAME`で選択する。直接指定時のHTTPヘッダーは`--header-from-env HEADER=ENV`で環境変数名だけを渡し、URLとヘッダー値はレポートへ出力しない。`--config`、`--codex-config`、`--url`は同時に指定しない。
+
+context-stat用の設定ファイルはJSONオブジェクトとし、Codex設定はTOMLの`[mcp_servers.<名前>]`を使う。context-stat用JSONのstdioは次の形式を使う。
 
 ```json
 {
@@ -235,7 +254,7 @@ Streamable HTTPは`url`を必須とし、認証値は環境変数名だけを設
 }
 ```
 
-`env`はstdio子プロセスへ渡す環境変数、`headers_from_env`はHTTP接続時に読み込む環境変数名であり、値そのものは設定ファイルへ書かない。現行の公式SDK依存範囲は`pyproject.toml`の`mcp>=2,<2.1`で固定する。
+`env`はstdio子プロセスへ渡す環境変数、`headers_from_env`はHTTP接続時に読み込む環境変数名であり、値そのものは設定ファイルへ書かない。Codex設定を使う場合は、`[mcp_servers.<名前>]`の接続情報を`McpServerConfig`へ変換する。Codexの`http_headers`は静的ヘッダー、`env_http_headers`と`bearer_token_env_var`は環境変数から読むヘッダーとして扱う。OAuth保存情報やChatGPTセッション認証はアダプターへ渡さない。現行の公式SDK依存範囲は`pyproject.toml`の`mcp>=2,<2.1`で固定する。
 
 ### `McpClientPort`
 
@@ -247,7 +266,7 @@ Streamable HTTPは`url`を必須とし、認証値は環境変数名だけを設
 
 ### `McpExchangeRecorder`
 
-論理リクエスト、返却結果、content、実行時間、エラーを記録する。結果には`direction`と`semantic_role`を持たせる。`generated`と`returned`は別合計にし、initializeなどのprotocolメッセージはコンテキスト合計へ加算しない。SDKからwire-level情報を取得できない場合、protocolは`skip`とする。
+論理リクエスト、返却結果、content、実行時間、エラーを記録する。結果には`direction`と`semantic_role`を持たせる。`generated`と`returned`は別合計にし、initializeなどのprotocolメッセージはコンテキスト合計へ加算しない。SDKからwire-level情報を取得できない場合、protocolは`skip`とする。MCPが`isError: true`を返した場合は、返却結果の状態を`facts.result`へ記録し、通信・プロトコル例外とは区別する。返却結果の表示値は、画像データを寸法表示へ置き換えたサニタイズ済み値とし、本文の表示は`-v`/`--verbose`指定時に限る。
 
 ### `McpContentExtractor`
 
@@ -255,11 +274,11 @@ Streamable HTTPは`url`を必須とし、認証値は環境変数名だけを設
 
 ## 出力の責務
 
-`MeasurementReport`は出力形式を知らず、`output.py`のrenderer関数が表示を担当する。JSONは`schema_version=1`の公開フィールドへ明示的に変換し、ドメインオブジェクトを直接JSON化しない。path groupではファイルnodeとディレクトリ集計nodeを別に作り、ディレクトリnodeは配下の測定済みファイルを集計する。path group以外ではグループ全体の集計値を`summary`として出力し、tableでもグループ名の先頭行に表示する。全角文字を含む表はUnicodeの表示幅を使って列を整列し、警告・エラーは診断出力として標準エラーへ分離する。公開フィールドの詳細は機能仕様の「JSON出力の現行スキーマ」を正のソースとする。
+`MeasurementReport`は出力形式を知らず、`output.py`のrenderer関数が表示を担当する。JSONは`schema_version=1`の公開フィールドへ明示的に変換し、ドメインオブジェクトを直接JSON化しない。path groupではファイルnodeとディレクトリ集計nodeを別に作り、ディレクトリnodeは配下の測定済みファイルを集計する。path group以外ではグループ全体の集計値を`summary`として出力し、tableでもグループ名の先頭行に表示する。`mcp request`では結果状態を表の外側に表示し、`-v`/`--verbose`指定時だけ返却結果本文を続けて表示する。画像contentのデータはMIME typeと寸法へ置き換える。全角文字を含む表はUnicodeの表示幅を使って列を整列し、警告・エラーは診断出力として標準エラーへ分離する。公開フィールドの詳細は機能仕様の「JSON出力の現行スキーマ」を正のソースとする。
 
 ## 現行実装で確定した事項
 
-- MCP設定はJSONとし、stdioは`command`、Streamable HTTPは`url`を必須とする。
+- MCP設定はJSONまたはCodex TOMLとし、stdioは`command`、Streamable HTTPは`url`を必須とする。Codex TOMLは`[mcp_servers.<名前>]`から接続設定を変換する。
 - MCPのSDK依存は`mcp>=2,<2.1`とし、wire-levelのトークン数はSDKから取得できないため`skip`の事実情報で記録する。
 - payloadは計測対象を保持する不変データクラスとし、ストリーミング再読込は現行版の対象外とする。
 - Git差分はファイル単位のpatchを`ContentItem`として扱い、変更ファイル数・追加行数・削除行数は`ContentBundle.facts`へ分離する。

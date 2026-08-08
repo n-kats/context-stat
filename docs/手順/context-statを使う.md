@@ -85,10 +85,18 @@ stdio設定の例です。
 ```text
 context-stat mcp list --config mcp.json
 context-stat mcp list --kind tools --config mcp.json
-context-stat mcp request --config mcp.json --method tools/call --name echo --params '{"message":"hello"}'
+context-stat -v mcp request --config mcp.json --method tools/call --name echo --params '{"message":"hello"}'
+context-stat mcp list --codex-config ~/.codex/config.toml --server docs
+context-stat -v mcp request --codex-config ~/.codex/config.toml --server docs --method tools/call --name echo --params '{"message":"hello"}'
+context-stat mcp list --url https://example.test/mcp
+context-stat -v mcp request --url https://example.test/mcp --header-from-env Authorization=MCP_AUTHORIZATION --method tools/call --name echo --params '{"message":"hello"}'
 ```
 
-Streamable HTTPは設定の`transport`を`streamable-http`、`url`を指定します。認証値は`headers_from_env`で環境変数から読み込みます。`--allow-online`はMCP接続の許可ではありません。
+`mcp request`は計測表の後にMCP結果の状態を表示する。`-v`/`--verbose`を共通オプションとして付けた場合だけ、その後に返却結果本文を表示する。返却contentに画像がある場合は、Base64を表示せず、MIME typeと幅・高さへ置き換える。MCPサーバーが`isError: true`を返した場合も結果状態と計測値を出力し、標準エラーへ診断を出したうえで終了コードは失敗になる。
+
+MCP接続は`--config FILE`、Codex設定の`--codex-config FILE`、`--url URL`のいずれかを指定します。`--url`はStreamable HTTPとして扱われます。Codex設定は`[mcp_servers.<名前>]`を読み取り、有効なサーバーが1つなら自動選択します。複数ある場合は`--server NAME`を指定します。`--config`、`--codex-config`、`--url`は同時に指定できません。`--allow-online`はMCP接続の許可ではありません。
+
+Codex設定からは、stdioの`command`、`args`、`cwd`、`env`と、Streamable HTTPの`url`、`headers`、`env_http_headers`、`bearer_token_env_var`を読み取ります。CodexのOAuth保存情報やChatGPTセッション認証はcontext-statから利用しません。
 
 ## 出力と診断
 
@@ -96,6 +104,54 @@ Streamable HTTPは設定の`transport`を`streamable-http`、`url`を指定し�
 
 ```text
 context-stat --format json stat src/ 1>result.json 2>warnings.log
+```
+
+## 出力形式の例
+
+標準入力を`hello`として計測した場合の主な形式は次のとおりです。
+
+```text
+$ printf 'hello\n' | context-stat stat -
+source: stdin
+[items]
++-------+--------+
+| item  | tokens |
++-------+--------+
+| items |      2 |
+| -     |      2 |
++-------+--------+
+```
+
+`tree`は対象の階層を罫線で表示します。
+
+```text
+$ printf 'hello\n' | context-stat --format tree stat -
+source: stdin
+└── items [2 tokens]
+    └── - [2 tokens]
+```
+
+`json`では、計測条件、項目別の値、グループの集計値、診断配列を分けて取得できます。MCPの`mcp request`では、`facts.result`に結果状態と返却contentの要約が入り、`-v`/`--verbose`指定時だけ`value`に返却結果本文が入ります。画像データはMIME typeと寸法の表示へ置き換わります。
+
+```text
+$ jq '.facts.result.value | {content, structuredContent}' mcp-result.json
+{
+  "content": [
+    {"type": "text", "text": "hello"}
+  ],
+  "structuredContent": {"echo": "hello"}
+}
+```
+
+上の`jq`例の`mcp-result.json`は、`context-stat -v --format json mcp request ...`で作成したJSONを想定しています。`mcp request`の人間向け出力では、計測表の後に結果状態が表示され、`-v`/`--verbose`指定時だけ返却結果本文が続きます。画像は例えば`<image/png 48x24>`のように表示され、Base64は出力されません。`isError: true`の場合は結果状態を表示した後、`-v`指定時は本文も表示し、標準エラーへ診断を出して終了コードを失敗にします。
+
+## 診断の例
+
+計測結果は標準出力、警告とエラーは標準エラーへ出力されます。診断には種類と対象が含まれます。
+
+```text
+warning [measurement-skipped] [item-id]: tokens: image tokenizer is not implemented
+error [measurement-failed] [item-id]: tokens: text decoding failed
 ```
 
 ## シェル補完

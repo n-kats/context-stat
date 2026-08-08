@@ -31,6 +31,11 @@ async def list_tools(_context: object, params: object) -> types.ListToolsResult:
 
 
 async def call_tool(_context: object, params: types.CallToolRequestParams) -> types.CallToolResult:
+    if params.name == "fail":
+        return types.CallToolResult(
+            isError=True,
+            content=[types.TextContent(text="server rejected the request")],
+        )
     arguments = params.arguments or {}
     message = str(arguments.get("message", ""))
     return types.CallToolResult(

@@ -13,7 +13,9 @@ from pathlib import Path
 from click.testing import CliRunner
 from PIL import Image
 
-from context_stat.cli import main
+from context_stat.cli import _mcp_result_items, _mcp_result_value, main
+from context_stat.domain.content import ContentItem, ContentKind, ImagePayload
+from context_stat.domain.measurement import MeasuredItem
 
 
 def test_stat_stdin_uses_default_text_tokenizer() -> None:
@@ -693,6 +695,7 @@ def test_mcp_request_uses_official_stdio_sdk(tmp_path: Path) -> None:
             sys.executable,
             "-m",
             "context_stat",
+            "-v",
             "mcp",
             "request",
             "--config",
@@ -711,14 +714,17 @@ def test_mcp_request_uses_official_stdio_sdk(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
+    assert "result: ok" in result.stdout
+    assert "hello" in result.stdout
     assert "[generated]" in result.stdout
     assert "[returned]" in result.stdout
+    assert result.stdout.index("[generated]") < result.stdout.index("response:")
 
 
-def test_mcp_list_uses_official_stdio_sdk(tmp_path: Path) -> None:
+def test_mcp_request_reports_mcp_error_result(tmp_path: Path) -> None:
     uv = shutil.which("uv")
     assert uv is not None
-    config = tmp_path / "mcp.json"
+    config = tmp_path / "config.json"
     config.write_text(
         json.dumps(
             {
@@ -736,13 +742,101 @@ def test_mcp_list_uses_official_stdio_sdk(tmp_path: Path) -> None:
             sys.executable,
             "-m",
             "context_stat",
+            "-v",
+            "mcp",
+            "request",
+            "--config",
+            str(config),
+            "--method",
+            "tools/call",
+            "--name",
+            "fail",
+            "--params",
+            "{}",
+        ],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "result: error" in result.stdout
+    assert "response:" in result.stdout
+    assert "server rejected the request" in result.stdout
+    assert "error [mcp-request-error]" in result.stderr
+
+
+def test_mcp_result_image_summary_includes_dimensions() -> None:
+    image = io.BytesIO()
+    Image.new("RGB", (48, 24), color="white").save(image, format="PNG")
+    item = ContentItem(
+        item_id="mcp:return:0",
+        origin="mcp",
+        label="tools/call.content[0]",
+        kind=ContentKind.IMAGE,
+        payload=ImagePayload(image.getvalue(), media_type="image/png"),
+    )
+    measured = MeasuredItem(
+        item_id=item.item_id,
+        origin="mcp",
+        label=item.label,
+        kind="image",
+        metrics={},
+    )
+
+    summary = _mcp_result_items((item,), [measured])
+
+    assert summary == [
+        {
+            "label": "tools/call.content[0]",
+            "kind": "image",
+            "media_type": "image/png",
+            "dimensions": {"width": 48, "height": 24},
+        }
+    ]
+
+    displayed = _mcp_result_value(
+        {
+            "content": [
+                {
+                    "type": "image",
+                    "data": "base64-must-not-be-displayed",
+                    "mimeType": "image/png",
+                }
+            ]
+        },
+        "tools/call",
+        summary,
+    )
+
+    assert displayed["content"][0]["data"] == "<image/png 48x24>"
+
+
+def test_mcp_list_uses_official_stdio_sdk(tmp_path: Path) -> None:
+    uv = shutil.which("uv")
+    assert uv is not None
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[mcp_servers.test]\n"
+        f"command = {json.dumps(uv)}\n"
+        'args = ["run", "python", "tests/fixtures/mcp_stdio_server.py"]\n'
+        f"cwd = {json.dumps(str(Path.cwd()))}\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "context_stat",
             "--format",
             "json",
             "mcp",
             "list",
             "--kind",
             "tools",
-            "--config",
+            "--codex-config",
             str(config),
         ],
         cwd=Path.cwd(),
@@ -756,8 +850,13 @@ def test_mcp_list_uses_official_stdio_sdk(tmp_path: Path) -> None:
     assert [group["name"] for group in document["groups"]] == ["tools"]
     assert document["groups"][0]["facts"]["item_count"] == 2
     assert document["groups"][0]["facts"]["pages"] == 2
-    assert document["groups"][0]["items"][0]["label"] == "tools[0]"
-    assert document["groups"][0]["items"][1]["label"] == "tools[1]"
+    assert document["groups"][0]["items"][0]["label"] == "echo"
+    assert document["groups"][0]["items"][1]["label"] == "echo-second"
+    assert document["groups"][0]["items"][0]["metadata"]["mcp_description"] == (
+        "Return the supplied message."
+    )
+    assert document["request"]["source"] == "codex-config"
+    assert document["request"]["server"] == "test"
 
 
 def test_mcp_request_uses_streamable_http_without_allow_online(tmp_path: Path) -> None:
@@ -789,16 +888,6 @@ def test_mcp_request_uses_streamable_http_without_allow_online(tmp_path: Path) -
             stderr = server.stderr.read() if server.stderr is not None else ""
             raise AssertionError(f"MCP HTTP test server did not start: {stderr}")
 
-        config = tmp_path / "mcp-http.json"
-        config.write_text(
-            json.dumps(
-                {
-                    "transport": "streamable-http",
-                    "url": f"http://127.0.0.1:{port}/mcp",
-                }
-            ),
-            encoding="utf-8",
-        )
         result = subprocess.run(
             [
                 sys.executable,
@@ -806,10 +895,11 @@ def test_mcp_request_uses_streamable_http_without_allow_online(tmp_path: Path) -
                 "context_stat",
                 "--format",
                 "json",
+                "-v",
                 "mcp",
                 "request",
-                "--config",
-                str(config),
+                "--url",
+                f"http://127.0.0.1:{port}/mcp",
                 "--method",
                 "tools/call",
                 "--name",
@@ -826,6 +916,10 @@ def test_mcp_request_uses_streamable_http_without_allow_online(tmp_path: Path) -
         assert result.returncode == 0, result.stderr
         document = json.loads(result.stdout)
         assert [group["name"] for group in document["groups"]] == ["generated", "returned"]
+        assert document["facts"]["result"]["value"]["content"][0]["text"] == "hello"
+        assert document["request"]["source"] == "url"
+        assert document["request"]["config"] is None
+        assert f"http://127.0.0.1:{port}/mcp" not in result.stdout
     finally:
         server.terminate()
         try:
@@ -833,3 +927,26 @@ def test_mcp_request_uses_streamable_http_without_allow_online(tmp_path: Path) -
         except subprocess.TimeoutExpired:
             server.kill()
             server.wait(timeout=5)
+
+
+def test_mcp_config_and_url_are_mutually_exclusive(tmp_path: Path) -> None:
+    config = tmp_path / "mcp.json"
+    config.write_text(
+        json.dumps({"transport": "streamable-http", "url": "http://example.test/mcp"}),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "mcp",
+            "list",
+            "--config",
+            str(config),
+            "--url",
+            "http://example.test/mcp",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--config, --codex-config, and --url cannot be used together" in result.output

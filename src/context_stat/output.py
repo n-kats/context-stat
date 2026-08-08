@@ -51,7 +51,13 @@ def metric_to_dict(metric: MetricValue) -> dict[str, Any]:
     return result
 
 
-def report_to_dict(report: MeasurementReport, *, include_issues: bool = True) -> dict[str, Any]:
+def report_to_dict(
+    report: MeasurementReport,
+    *,
+    include_issues: bool = True,
+    verbose: bool = False,
+) -> dict[str, Any]:
+    facts = _report_facts(report, verbose=verbose)
     groups = []
     for group in report.groups:
         items = _ordered_items(group, report.request)
@@ -75,26 +81,30 @@ def report_to_dict(report: MeasurementReport, *, include_issues: bool = True) ->
         "source": report.source,
         "request": report.request,
         "groups": groups,
-        "facts": report.facts,
+        "facts": facts,
         "warnings": [asdict(issue) for issue in report.warnings] if include_issues else [],
         "errors": [asdict(issue) for issue in report.errors] if include_issues else [],
     }
 
 
 def render_report(
-    report: MeasurementReport, output_format: str, *, include_issues: bool = True
+    report: MeasurementReport,
+    output_format: str,
+    *,
+    include_issues: bool = True,
+    verbose: bool = False,
 ) -> str:
-    data = report_to_dict(report, include_issues=include_issues)
+    data = report_to_dict(report, include_issues=include_issues, verbose=verbose)
     if output_format == "json":
         return json.dumps(data, ensure_ascii=False, indent=2)
     if output_format == "tree":
-        return _render_tree(report, include_issues=include_issues)
+        return _render_tree(report, include_issues=include_issues, verbose=verbose)
     if output_format not in {"table", "human"}:
         raise ValueError(f"unsupported output format: {output_format}")
-    return _render_table(report, include_issues=include_issues)
+    return _render_table(report, include_issues=include_issues, verbose=verbose)
 
 
-def _render_table(report: MeasurementReport, *, include_issues: bool) -> str:
+def _render_table(report: MeasurementReport, *, include_issues: bool, verbose: bool) -> str:
     lines = [f"source: {report.source}"]
     for group in report.groups:
         lines.append(f"[{group.name}]")
@@ -128,18 +138,36 @@ def _render_table(report: MeasurementReport, *, include_issues: bool) -> str:
             alignments = ["left", "left", *(["right"] * len(metric_names))]
         else:
             items = _ordered_items(group, report.request)
+            detail_columns = _mcp_detail_columns(report, group, items)
             rows = [
-                [item.label, *(_metric_cell(item.metrics.get(name)) for name in metric_names)]
+                [
+                    item.label,
+                    *(_mcp_detail_value(item, column) for column in detail_columns),
+                    *(_metric_cell(item.metrics.get(name)) for name in metric_names),
+                ]
                 for item in items
             ]
             if totals:
                 rows.insert(
                     0,
-                    [group.name, *(_metric_cell(totals.get(name)) for name in metric_names)],
+                    [
+                        group.name,
+                        *("" for _ in detail_columns),
+                        *(_metric_cell(totals.get(name)) for name in metric_names),
+                    ],
                 )
-            headers = ["item", *(_METRIC_LABELS.get(name, name) for name in metric_names)]
-            alignments = ["left", *(["right"] * len(metric_names))]
+            headers = [
+                "item",
+                *detail_columns,
+                *(_METRIC_LABELS.get(name, name) for name in metric_names),
+            ]
+            alignments = [
+                "left",
+                *("left" for _ in detail_columns),
+                *("right" for _ in metric_names),
+            ]
         lines.extend(_ascii_table(headers, rows, alignments=alignments))
+    lines.extend(_render_mcp_result(report, verbose=verbose))
     if include_issues:
         lines.extend(_render_issues(report))
     return "\n".join(lines)
@@ -155,7 +183,7 @@ class _TreeNode:
     item: MeasuredItem | None = None
 
 
-def _render_tree(report: MeasurementReport, *, include_issues: bool) -> str:
+def _render_tree(report: MeasurementReport, *, include_issues: bool, verbose: bool) -> str:
     sort_by, order = _sort_config(report.request)
     roots: list[_TreeNode] = []
     for group in report.groups:
@@ -172,6 +200,11 @@ def _render_tree(report: MeasurementReport, *, include_issues: bool) -> str:
         tree = Tree(Text(f"source: {report.source}"))
         for root in roots:
             _add_rich_tree_node(tree, root)
+        result = _mcp_result(report)
+        if result:
+            result_node = tree.add(Text(f"result: {result['status']}"))
+            if verbose:
+                _add_result_value_tree(result_node, result.get("value"))
         buffer = StringIO()
         Console(
             file=buffer,
@@ -184,6 +217,93 @@ def _render_tree(report: MeasurementReport, *, include_issues: bool) -> str:
     if include_issues:
         lines.extend(_render_issues(report))
     return "\n".join(lines)
+
+
+def _report_facts(report: MeasurementReport, *, verbose: bool) -> dict[str, Any]:
+    if verbose or report.source != "mcp-request":
+        return report.facts
+    result = report.facts.get("result")
+    if not isinstance(result, dict) or "value" not in result:
+        return report.facts
+    facts = dict(report.facts)
+    facts["result"] = {key: value for key, value in result.items() if key != "value"}
+    return facts
+
+
+def _mcp_result(report: MeasurementReport) -> dict[str, Any] | None:
+    if report.source != "mcp-request":
+        return None
+    result = report.facts.get("result")
+    if not isinstance(result, dict):
+        return None
+    status = result.get("status")
+    items = result.get("items")
+    if not isinstance(status, str) or not isinstance(items, list):
+        return None
+    return {"status": status, "items": items, "value": result.get("value")}
+
+
+def _add_result_value_tree(parent: Tree, value: Any) -> None:
+    if isinstance(value, dict):
+        node = parent.add(Text("response"))
+        for key, entry in value.items():
+            _add_result_value_tree_entry(node, str(key), entry)
+        return
+    parent.add(Text(f"response: {json.dumps(value, ensure_ascii=False)}"))
+
+
+def _add_result_value_tree_entry(parent: Tree, label: str, value: Any) -> None:
+    if isinstance(value, dict):
+        node = parent.add(Text(label))
+        for key, entry in value.items():
+            _add_result_value_tree_entry(node, str(key), entry)
+        return
+    if isinstance(value, list):
+        node = parent.add(Text(label))
+        for index, entry in enumerate(value):
+            _add_result_value_tree_entry(node, f"[{index}]", entry)
+        return
+    parent.add(Text(f"{label}: {json.dumps(value, ensure_ascii=False)}"))
+
+
+def _mcp_result_item_text(item: Any) -> str:
+    if not isinstance(item, dict):
+        return "unknown"
+    label = str(item.get("label", "result"))
+    kind = str(item.get("kind", "structured"))
+    if kind != "image":
+        return f"{label}: {kind}"
+    media_type = str(item.get("media_type") or "image")
+    dimensions = item.get("dimensions")
+    if isinstance(dimensions, dict):
+        width = dimensions.get("width")
+        height = dimensions.get("height")
+        if isinstance(width, int) and isinstance(height, int):
+            size = f"{width}x{height}"
+        else:
+            size = "dimensions=unknown"
+    else:
+        size = "dimensions=unknown"
+    frames = item.get("frames")
+    frame_suffix = f", {frames} frames" if isinstance(frames, int) and frames != 1 else ""
+    return f"{label}: {media_type} {size}{frame_suffix}"
+
+
+def _render_mcp_result(report: MeasurementReport, *, verbose: bool) -> list[str]:
+    result = _mcp_result(report)
+    if result is None:
+        return []
+    lines = [f"result: {result['status']}"]
+    if not verbose:
+        return lines
+    lines.append("response:")
+    value = result.get("value")
+    if value is not None:
+        rendered = json.dumps(value, ensure_ascii=False, indent=2)
+        lines.extend(f"  {line}" for line in rendered.splitlines())
+    else:
+        lines.extend(f"  {_mcp_result_item_text(item)}" for item in result["items"])
+    return lines
 
 
 def _add_rich_tree_node(parent: Tree, node: _TreeNode) -> None:
@@ -477,6 +597,29 @@ def _metric_names(
     return [name for name in _METRIC_ORDER if name in names] + sorted(
         names.difference(_METRIC_ORDER)
     )
+
+
+def _mcp_detail_columns(
+    report: MeasurementReport, group: MeasurementGroup, items: list[MeasuredItem]
+) -> list[str]:
+    if report.source != "mcp-list":
+        return []
+    columns: list[str] = []
+    if any(isinstance(item.metadata.get("mcp_description"), str) for item in items):
+        columns.append("description")
+    if group.name == "resources" and any(
+        isinstance(item.metadata.get("mcp_uri"), str) and item.metadata["mcp_uri"] != item.label
+        for item in items
+    ):
+        columns.append("uri")
+    return columns
+
+
+def _mcp_detail_value(item: MeasuredItem, column: str) -> str:
+    value = item.metadata.get(f"mcp_{column}")
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split())
 
 
 def _metric_cell(metric: MetricValue | None) -> str:

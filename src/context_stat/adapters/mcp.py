@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import tomllib
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
@@ -30,6 +31,18 @@ def jsonable(value: Any) -> Any:
     return str(value)
 
 
+def _codex_string_map(value: Any, field: str, server_name: str) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not all(
+        isinstance(key, str) and isinstance(item, str) for key, item in value.items()
+    ):
+        raise ConfigurationError(
+            f"Codex MCP server {field} must be a map of strings: {server_name}"
+        )
+    return dict(value)
+
+
 @dataclass(frozen=True)
 class McpServerConfig:
     transport: str
@@ -38,7 +51,9 @@ class McpServerConfig:
     env: dict[str, str] | None = None
     cwd: str | None = None
     url: str | None = None
+    headers: dict[str, str] | None = None
     headers_from_env: dict[str, str] | None = None
+    server_name: str | None = None
 
     @classmethod
     def from_path(cls, path: Path) -> McpServerConfig:
@@ -69,6 +84,14 @@ class McpServerConfig:
             )
         ):
             raise ConfigurationError("headers_from_env must map header names to env names")
+        headers = value.get("headers")
+        if headers is not None and (
+            not isinstance(headers, dict)
+            or not all(
+                isinstance(key, str) and isinstance(item, str) for key, item in headers.items()
+            )
+        ):
+            raise ConfigurationError("MCP config headers must map header names to values")
         return cls(
             transport=transport,
             command=value.get("command"),
@@ -76,8 +99,115 @@ class McpServerConfig:
             env=env,
             cwd=value.get("cwd"),
             url=value.get("url"),
+            headers=headers,
             headers_from_env=headers_from_env,
         )
+
+    @classmethod
+    def from_codex_path(cls, path: Path, server_name: str | None = None) -> McpServerConfig:
+        try:
+            value = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            raise ConfigurationError(f"could not read Codex config {path}: {exc}") from exc
+        if not isinstance(value, dict):
+            raise ConfigurationError("Codex config must be a TOML table")
+        servers = value.get("mcp_servers")
+        if not isinstance(servers, dict):
+            raise ConfigurationError("Codex config must contain an mcp_servers table")
+
+        candidates: list[str] = []
+        for name, settings in servers.items():
+            if not isinstance(name, str) or not isinstance(settings, dict):
+                raise ConfigurationError("Codex mcp_servers entries must be tables")
+            enabled = settings.get("enabled", True)
+            if not isinstance(enabled, bool):
+                raise ConfigurationError(f"Codex MCP server {name} enabled must be a boolean")
+            if enabled and ("command" in settings or "url" in settings):
+                candidates.append(name)
+
+        if server_name is None:
+            if len(candidates) != 1:
+                if not candidates:
+                    raise ConfigurationError(
+                        "Codex config has no enabled MCP server with command or url"
+                    )
+                available = ", ".join(candidates)
+                raise ConfigurationError(
+                    f"Codex config has multiple enabled MCP servers; use --server NAME "
+                    f"(available: {available})"
+                )
+            selected_name = candidates[0]
+        else:
+            selected_name = server_name
+            settings = servers.get(selected_name)
+            if not isinstance(settings, dict):
+                available = ", ".join(candidates) or "none"
+                raise ConfigurationError(
+                    f"Codex MCP server not found: {selected_name} (available: {available})"
+                )
+            if settings.get("enabled", True) is False:
+                raise ConfigurationError(f"Codex MCP server is disabled: {selected_name}")
+
+        settings = servers[selected_name]
+        if not isinstance(settings, dict):
+            raise ConfigurationError(f"Codex MCP server must be a table: {selected_name}")
+        command = settings.get("command")
+        url = settings.get("url")
+        if command is not None and url is not None:
+            raise ConfigurationError(
+                f"Codex MCP server cannot define both command and url: {selected_name}"
+            )
+        if command is not None:
+            if not isinstance(command, str) or not command:
+                raise ConfigurationError(
+                    f"Codex MCP server command must be a non-empty string: {selected_name}"
+                )
+            args = settings.get("args", [])
+            if not isinstance(args, list) or not all(isinstance(item, str) for item in args):
+                raise ConfigurationError(
+                    f"Codex MCP server args must be an array of strings: {selected_name}"
+                )
+            env = _codex_string_map(settings.get("env"), "env", selected_name)
+            cwd = settings.get("cwd")
+            if cwd is not None and not isinstance(cwd, str):
+                raise ConfigurationError(f"Codex MCP server cwd must be a string: {selected_name}")
+            return cls(
+                transport="stdio",
+                command=command,
+                args=tuple(args),
+                env=env or None,
+                cwd=cwd,
+                server_name=selected_name,
+            )
+        if url is not None:
+            if not isinstance(url, str) or not url:
+                raise ConfigurationError(
+                    f"Codex MCP server url must be a non-empty string: {selected_name}"
+                )
+            headers = _codex_string_map(settings.get("http_headers"), "http_headers", selected_name)
+            headers_from_env = _codex_string_map(
+                settings.get("env_http_headers"), "env_http_headers", selected_name
+            )
+            bearer_env = settings.get("bearer_token_env_var")
+            if bearer_env is not None:
+                if not isinstance(bearer_env, str) or not bearer_env:
+                    raise ConfigurationError(
+                        "Codex MCP bearer_token_env_var must be a non-empty string: "
+                        f"{selected_name}"
+                    )
+                if "Authorization" in headers or "Authorization" in headers_from_env:
+                    raise ConfigurationError(
+                        f"Codex MCP server defines Authorization more than once: {selected_name}"
+                    )
+                headers_from_env["Authorization"] = bearer_env
+            return cls(
+                transport="streamable-http",
+                url=url,
+                headers=headers or None,
+                headers_from_env=headers_from_env or None,
+                server_name=selected_name,
+            )
+        raise ConfigurationError(f"Codex MCP server must define command or url: {selected_name}")
 
     def validate(self) -> None:
         if self.transport == "stdio":
@@ -130,7 +260,7 @@ class OfficialMcpSdkAdapter:
         else:
             from mcp.client.streamable_http import streamable_http_client
 
-            headers = {}
+            headers = dict(self._config.headers or {})
             for header, env_name in (self._config.headers_from_env or {}).items():
                 value = os.environ.get(env_name)
                 if value is None:
@@ -249,18 +379,42 @@ def _content_item(
 def list_result_bundle(result: Any, kind: str) -> ContentBundle:
     value = jsonable(result)
     entries = value.get(kind, []) if isinstance(value, dict) else []
-    items = [
-        ContentItem(
-            item_id=f"mcp:{kind}:{index}",
-            origin="mcp",
-            label=f"{kind}[{index}]",
-            kind=ContentKind.STRUCTURED,
-            payload=StructuredPayload(value=entry),
-            direction="server_to_client",
-            semantic_role="returned",
+    items = []
+    for index, entry in enumerate(entries):
+        metadata: dict[str, Any] = {
+            "mcp_kind": kind,
+            "mcp_index": index,
+            "mcp_definition": entry,
+        }
+        label = f"{kind}[{index}]"
+        if isinstance(entry, dict):
+            name = entry.get("name")
+            uri = entry.get("uri")
+            description = entry.get("description")
+            if isinstance(name, str) and name:
+                label = name
+                metadata["mcp_name"] = name
+            elif kind == "resources" and isinstance(uri, str) and uri:
+                label = uri
+            if isinstance(uri, str) and uri:
+                metadata["mcp_uri"] = uri
+            if isinstance(description, str) and description:
+                metadata["mcp_description"] = description
+            mime_type = entry.get("mimeType")
+            if isinstance(mime_type, str) and mime_type:
+                metadata["mcp_mime_type"] = mime_type
+        items.append(
+            ContentItem(
+                item_id=f"mcp:{kind}:{index}",
+                origin="mcp",
+                label=label,
+                kind=ContentKind.STRUCTURED,
+                payload=StructuredPayload(value=entry),
+                metadata=metadata,
+                direction="server_to_client",
+                semantic_role="returned",
+            )
         )
-        for index, entry in enumerate(entries)
-    ]
     return ContentBundle(tuple(items), facts={"operation": f"{kind}/list"})
 
 

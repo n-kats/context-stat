@@ -257,6 +257,18 @@ def test_git_diff_decodes_non_ascii_paths(tmp_path: Path) -> None:
 
 def test_mcp_result_content_is_split_into_typed_items() -> None:
     listing = list_result_bundle({"tools": [{"name": "echo", "inputSchema": {}}]}, "tools")
+    resources = list_result_bundle(
+        {
+            "resources": [
+                {
+                    "name": "guide",
+                    "uri": "resource://guide",
+                    "description": "A guide.",
+                }
+            ]
+        },
+        "resources",
+    )
     returned = result_bundle(
         {
             "content": [{"type": "text", "text": "hello"}],
@@ -266,6 +278,10 @@ def test_mcp_result_content_is_split_into_typed_items() -> None:
     )
 
     assert listing.items[0].kind.value == "structured"
+    assert listing.items[0].label == "echo"
+    assert listing.items[0].metadata["mcp_definition"]["name"] == "echo"
+    assert resources.items[0].label == "guide"
+    assert resources.items[0].metadata["mcp_uri"] == "resource://guide"
     assert returned.items[0].kind.value == "text"
     assert returned.items[0].direction == "server_to_client"
     assert returned.items[1].kind.value == "structured"
